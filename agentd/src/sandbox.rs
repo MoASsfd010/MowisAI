@@ -352,6 +352,11 @@ impl Sandbox {
     /// this is a convenience wrapper used by unit tests and simple integrations,
     /// it behaves like `invoke_tool_in_container` but uses the sandbox's own root
     /// directory rather than requiring a container id.
+    /// DEPRECATED: Use prepare_tool_invocation() + execute_tool_unlocked() for lock-free execution.
+    /// This method has incomplete policy checks (only 5 tools covered).
+    /// DEPRECATED: Use `prepare_tool_invocation()` + `execute_tool_unlocked()` for lock-free execution.
+    /// This method has incomplete policy checks (only 5 tools covered).
+    /// Invoke a tool in the sandbox root context.
     pub fn invoke_tool(
         &self,
         name: &str,
@@ -403,7 +408,9 @@ impl Sandbox {
         Ok(output)
     }
 
-    /// attempt to invoke a named tool within a container (uses container root path).
+    /// DEPRECATED: Use prepare_tool_invocation() + execute_tool_unlocked() for lock-free execution.
+    /// This method has incomplete policy checks (only 5 tools covered).
+    /// Attempt to invoke a named tool within a container (uses container root path).
     pub fn invoke_tool_in_container(
         &self,
         container_id: u64,
@@ -517,8 +524,7 @@ impl Sandbox {
                 }
                 // Shell commands are dangerous - require explicit permission
                 "run_command" | "run_script" => {
-                    if !policy.check_network_access(true) {
-                        // reuse network access for now; should add shell_execution permission
+                    if !policy.check_shell_execution() {
                         return Err(anyhow::anyhow!(
                             "security policy denied shell command execution"
                         ));

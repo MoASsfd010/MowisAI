@@ -10,6 +10,8 @@ pub struct SecurityPolicy {
     pub resource_limits: ResourceSecurityLimits,
     pub file_access_rules: Vec<FileAccessRule>,
     pub network_rules: Vec<NetworkRule>,
+    /// Whether shell commands (run_command, run_script) are allowed
+    pub allow_shell_execution: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -105,6 +107,7 @@ impl SecurityPolicy {
                 allowed_ports: vec![],
                 blocked_ports: vec![],
             }],
+            allow_shell_execution: false,
         }
     }
 
@@ -131,6 +134,7 @@ impl SecurityPolicy {
                 allowed_ports: vec![],
                 blocked_ports: vec![],
             }],
+            allow_shell_execution: true,
         }
     }
 
@@ -171,6 +175,10 @@ impl SecurityPolicy {
             }
         }
         false
+    }
+
+    pub fn check_shell_execution(&self) -> bool {
+        self.allow_shell_execution
     }
 }
 
