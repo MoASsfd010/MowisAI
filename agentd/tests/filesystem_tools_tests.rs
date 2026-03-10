@@ -40,7 +40,7 @@ fn test_read_file_basic() {
 
 #[test]
 fn test_read_file_nonexistent() {
-    let sandbox = Sandbox::new(ResourceLimits {
+    let mut sandbox = Sandbox::new(ResourceLimits {
         ram_bytes: None,
         cpu_millis: None,
     })
@@ -249,7 +249,7 @@ fn test_delete_file_basic() {
 
 #[test]
 fn test_delete_file_nonexistent() {
-    let sandbox = Sandbox::new(ResourceLimits {
+    let mut sandbox = Sandbox::new(ResourceLimits {
         ram_bytes: None,
         cpu_millis: None,
     })
@@ -760,7 +760,7 @@ fn test_file_exists_true() {
 
 #[test]
 fn test_file_exists_false() {
-    let sandbox = Sandbox::new(ResourceLimits {
+    let mut sandbox = Sandbox::new(ResourceLimits {
         ram_bytes: None,
         cpu_millis: None,
     })

@@ -1,5 +1,5 @@
 use libagent::{ResourceLimits, Sandbox, Tool};
-use serde_json::json;
+use serde_json::{json, Value};
 
 // ============== SHELL TOOL TESTS (5 operations) ==============
 // run_command, run_script, kill_process, get_env, set_env
@@ -348,7 +348,7 @@ fn test_get_env_existing() {
     );
     assert!(result.is_ok());
     let output = result.unwrap();
-    assert_ne!(output["value"], null);
+    assert_ne!(output["value"], Value::Null);
 }
 
 #[test]
@@ -369,7 +369,7 @@ fn test_get_env_nonexistent() {
     );
     assert!(result.is_ok());
     let output = result.unwrap();
-    assert_eq!(output["value"], null);
+    assert_eq!(output["value"], Value::Null);
 }
 
 #[test]

@@ -25,6 +25,7 @@ use tempfile::TempDir;
 // mix a few random low bits so that the sequence isn't trivially guessable.
 lazy_static! {
     static ref SANDBOX_COUNTER: AtomicU64 = AtomicU64::new(init_counter());
+    static ref CONTAINER_COUNTER: AtomicU64 = AtomicU64::new(init_counter());
 }
 
 /// initialize the atomic counter with a time-derived seed so that early IDs
@@ -43,32 +44,6 @@ fn init_counter() -> u64 {
 /// A handle representing an isolated sandbox environment.
 use std::collections::HashMap;
 
-/// recursively copy all files and directories from src to dest
-fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
-    if !src.is_dir() {
-        return Err(anyhow::anyhow!(
-            "source is not a directory: {}",
-            src.display()
-        ));
-    }
-
-    for entry in fs::read_dir(src).context("read image dir")? {
-        let entry = entry.context("read dir entry")?;
-        let src_path = entry.path();
-        let file_name = entry.file_name();
-        let dest_path = dest.join(&file_name);
-
-        if entry.file_type().context("get file type")?.is_dir() {
-            fs::create_dir(&dest_path).ok(); // ignore if exists
-            copy_dir_recursive(&src_path, &dest_path)?;
-        } else {
-            // copy file, preserving permissions
-            fs::copy(&src_path, &dest_path).context("copy file")?;
-        }
-    }
-    Ok(())
-}
-
 /// Container represents an isolated environment created from a sandbox
 #[derive(Clone)]
 pub struct Container {
@@ -78,6 +53,28 @@ pub struct Container {
     pub root: PathBuf,
 }
 
+/// Prepared data for tool invocation without holding sandbox lock.
+/// This allows tool execution to proceed without blocking other operations.
+pub struct ToolInvocationPrep {
+    pub tool: Box<dyn crate::tools::Tool>,
+    pub sandbox_id: u64,
+    pub container_root: PathBuf,
+    pub policy: Option<crate::security::SecurityPolicy>,
+    pub tool_name: String,
+}
+
+/// Execute a tool without holding any locks. Returns the tool output or error.
+pub fn execute_tool_unlocked(
+    prep: ToolInvocationPrep,
+    input: serde_json::Value,
+) -> Result<serde_json::Value> {
+    let ctx = crate::tools::ToolContext {
+        sandbox_id: prep.sandbox_id,
+        root_path: Some(prep.container_root),
+    };
+    prep.tool.invoke(&ctx, input)
+}
+
 #[derive(Serialize)]
 pub struct Sandbox {
     id: u64,
@@ -85,9 +82,6 @@ pub struct Sandbox {
     // path to the root directory used for chroot/mount namespace
     #[serde(skip)]
     root: TempDir,
-    // persisted bucket directory for this sandbox
-    #[serde(skip)]
-    bucket_dir: PathBuf,
     #[serde(skip)]
     tools: HashMap<String, Box<dyn crate::tools::Tool>>,
     #[serde(skip)]
@@ -98,6 +92,9 @@ pub struct Sandbox {
     // sandbox upper directory for overlayfs
     #[serde(skip)]
     sandbox_upper: Option<PathBuf>,
+    // true if resource limits were successfully enforced (cgroup writes succeeded)
+    #[serde(skip)]
+    limits_enforced: bool,
     // containers created from this sandbox
     #[serde(skip)]
     containers: HashMap<u64, Container>,
@@ -110,12 +107,14 @@ impl Drop for Sandbox {
         // clean up overlayfs directories if they exist
         let overlay_base = std::env::temp_dir().join(format!("overlay-{}", self.id));
         let _ = std::fs::remove_dir_all(&overlay_base);
-        // clean up containers
+        // clean up containers: unmount and remove each container's temp directory
         for (_, container) in &self.containers {
             let _ = umount2(&container.root, MntFlags::MNT_DETACH);
-            let _ = std::fs::remove_dir_all(
-                &container.root.parent().unwrap_or_else(|| Path::new("/tmp")),
-            );
+            // Remove the entire container-{id} directory (parent of root)
+            // This is /tmp/container-{id} which contains upper/, work/, root/
+            if let Some(base) = container.root.parent() {
+                let _ = std::fs::remove_dir_all(base);
+            }
         }
     }
 }
@@ -199,21 +198,24 @@ impl Sandbox {
             }
         }
 
-        let bucket_dir = root.path().join("buckets");
-        fs::create_dir_all(&bucket_dir)?;
         let mut sb = Sandbox {
             id,
             limits,
             root,
-            bucket_dir,
             tools: HashMap::new(),
             policy: None,
             image_path,
             sandbox_upper,
+            limits_enforced: false,
             containers: HashMap::new(),
         };
         // apply resource limits via cgroups if possible
-        sb.apply_limits()?;
+        if let Err(e) = sb.apply_limits() {
+            log::warn!("sandbox {} resource limits not applied: {}", id, e);
+            sb.limits_enforced = false;
+        } else {
+            sb.limits_enforced = true;
+        }
         Ok(sb)
     }
 
@@ -246,20 +248,23 @@ impl Sandbox {
         ) {
             log::warn!("unable to mount tmpfs for sandbox {}: {}", id, e);
         }
-        let bucket_dir = root.path().join("buckets");
-        fs::create_dir_all(&bucket_dir)?;
         let mut sb = Sandbox {
             id,
             limits,
             root,
-            bucket_dir,
             tools: HashMap::new(),
             policy: None,
             image_path: None,
             sandbox_upper: None,
+            limits_enforced: false,
             containers: HashMap::new(),
         };
-        sb.apply_limits()?;
+        if let Err(e) = sb.apply_limits() {
+            log::warn!("sandbox {} resource limits not applied: {}", id, e);
+            sb.limits_enforced = false;
+        } else {
+            sb.limits_enforced = true;
+        }
         Ok(sb)
     }
 
@@ -343,6 +348,61 @@ impl Sandbox {
         self.tools.insert(tool.name().to_string(), tool);
     }
 
+    /// invoke a named tool directly in the sandbox (no container).
+    /// this is a convenience wrapper used by unit tests and simple integrations,
+    /// it behaves like `invoke_tool_in_container` but uses the sandbox's own root
+    /// directory rather than requiring a container id.
+    pub fn invoke_tool(
+        &self,
+        name: &str,
+        input: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        // reuse the same security policy checks as the container variant
+        if let Some(policy) = &self.policy {
+            match name {
+                "read_file" | "get_file_info" => {
+                    let path = input["path"].as_str().unwrap_or("");
+                    if !policy.check_file_access(path, crate::security::FileAccessType::Read) {
+                        return Err(anyhow::anyhow!(
+                            "security policy denied read access to {}",
+                            path
+                        ));
+                    }
+                }
+                "write_file" | "delete_file" | "create_directory" | "copy_file" => {
+                    let path = input["path"]
+                        .as_str()
+                        .or_else(|| input["dst"].as_str())
+                        .unwrap_or("");
+                    if !policy.check_file_access(path, crate::security::FileAccessType::Write) {
+                        return Err(anyhow::anyhow!(
+                            "security policy denied write access to {}",
+                            path
+                        ));
+                    }
+                }
+                "http_get" | "http_post" => {
+                    if !policy.check_network_access(true) {
+                        return Err(anyhow::anyhow!(
+                            "security policy denied outbound network access"
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+        let tool = self
+            .tools
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("tool not registered: {}", name))?;
+        let ctx = crate::tools::ToolContext {
+            sandbox_id: self.id,
+            root_path: Some(self.root.path().to_path_buf()),
+        };
+        let output = tool.invoke(&ctx, input)?;
+        Ok(output)
+    }
+
     /// attempt to invoke a named tool within a container (uses container root path).
     pub fn invoke_tool_in_container(
         &self,
@@ -402,13 +462,102 @@ impl Sandbox {
         self.policy = Some(policy);
     }
 
+    /// Get the current security policy (if set)
     pub fn policy(&self) -> Option<&crate::security::SecurityPolicy> {
         self.policy.as_ref()
     }
 
+    /// List all container IDs in this sandbox
+    pub fn list_containers(&self) -> Vec<u64> {
+        self.containers.keys().copied().collect()
+    }
+
+    /// Prepare a tool for invocation without holding locks. Returns prep data that can
+    /// be executed lock-free via `execute_tool_unlocked`. This enables other operations
+    /// to proceed while a slow tool (e.g. git_clone, run_command) is executing.
+    pub fn prepare_tool_invocation(
+        &self,
+        container_id: u64,
+        name: &str,
+        input: &serde_json::Value,
+    ) -> Result<ToolInvocationPrep> {
+        // Policy checks (same as before)
+        if let Some(policy) = &self.policy {
+            match name {
+                // File access
+                "read_file" | "get_file_info" => {
+                    let path = input["path"].as_str().unwrap_or("");
+                    if !policy.check_file_access(path, crate::security::FileAccessType::Read) {
+                        return Err(anyhow::anyhow!(
+                            "security policy denied read access to {}",
+                            path
+                        ));
+                    }
+                }
+                "write_file" | "delete_file" | "create_directory" | "copy_file" => {
+                    let path = input["path"]
+                        .as_str()
+                        .or_else(|| input["dst"].as_str())
+                        .unwrap_or("");
+                    if !policy.check_file_access(path, crate::security::FileAccessType::Write) {
+                        return Err(anyhow::anyhow!(
+                            "security policy denied write access to {}",
+                            path
+                        ));
+                    }
+                }
+                // Network access
+                "http_get" | "http_post" | "http_put" | "http_delete" | "http_patch" |
+                "download_file" | "websocket_send" => {
+                    if !policy.check_network_access(true) {
+                        return Err(anyhow::anyhow!(
+                            "security policy denied outbound network access"
+                        ));
+                    }
+                }
+                // Shell commands are dangerous - require explicit permission
+                "run_command" | "run_script" => {
+                    if !policy.check_network_access(true) {
+                        // reuse network access for now; should add shell_execution permission
+                        return Err(anyhow::anyhow!(
+                            "security policy denied shell command execution"
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Fetch tool and container
+        let tool = self
+            .tools
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("tool not registered: {}", name))?
+            .clone_box();
+
+        let container_root = self
+            .get_container_root(container_id)
+            .ok_or_else(|| anyhow::anyhow!("container {} not found", container_id))?
+            .clone();
+
+        Ok(ToolInvocationPrep {
+            tool,
+            sandbox_id: self.id,
+            container_root,
+            policy: self.policy.clone(),
+            tool_name: name.to_string(),
+        })
+    }
+
     /// create a new container from this sandbox with overlayfs isolation
     pub fn create_container(&mut self) -> anyhow::Result<u64> {
-        let id = fastrand::u64(..);
+        // use the same structured ID scheme as sandboxes: monotonic counter + random bits
+        const RANDOM_BITS: u64 = 16;
+        const RANDOM_MASK: u64 = (1 << RANDOM_BITS) - 1;
+        let base = CONTAINER_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let rand = fastrand::u64(..(RANDOM_MASK + 1));
+        let id = (base << RANDOM_BITS) | (rand & RANDOM_MASK);
+
         let base = std::env::temp_dir().join(format!("container-{}", id));
         let upper = base.join("upper");
         let work = base.join("work");

@@ -1,3 +1,11 @@
+// ───────────────────────────────────────────────────────────
+// LEGACY SUITE - written for an earlier agent engine version.
+// New, targeted tests have been added in `engine_tests.rs` which better
+// reflect current container and security‑policy behavior.  This file is kept
+// for historical reference and broad coverage; please avoid editing it when
+// adding new features.
+// ───────────────────────────────────────────────────────────
+
 use libagent::{ResourceLimits, Sandbox, Tool};
 use serde_json::json;
 
@@ -170,7 +178,8 @@ fn test_shell_tool_suite() {
     sandbox.register_tool(get_get_env_tool());
     let r = sandbox.invoke_tool("get_env", json!({"var": "TEST_ENV_VAR"}));
     assert!(r.is_ok());
-    let value = r.unwrap()["value"].as_str();
+    let result_val = r.unwrap();
+    let value = result_val["value"].as_str();
     println!("        ✓ GetEnv: Retrieved TEST_ENV_VAR={:?}", value);
 
     // 4. RunScript
@@ -441,7 +450,7 @@ fn test_docker_tool_suite() {
     // 4. DockerPs
     println!("  [4/7] Testing DockerPs tool...");
     sandbox.register_tool(get_docker_ps_tool());
-    let r = sandbox.invoke_tool("docker_ps", json!({}));
+    let _r = sandbox.invoke_tool("docker_ps", json!({}));
     println!("        ✓ DockerPs: Tool registered");
 
     // 5. DockerLogs
@@ -763,7 +772,7 @@ fn test_all_75_tools_summary() {
     println!("  ✓ Web Tools:                3 tools");
     println!("  ✓ Channels/Messaging:       5 tools");
     println!("  ✓ Utility & Dev Tools:      6 tools");
-    println!("  ","────────────────────────");
+    println!("  {}","────────────────────────");
     println!("  TOTAL:                     75 tools");
     println!("\n✅ All tools registered and operational!\n");
 }

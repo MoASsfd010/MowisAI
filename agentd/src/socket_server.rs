@@ -172,6 +172,58 @@ fn install_packages_in_image(
 // ── Request handler ───────────────────────────────────────────────────────────
 
 fn handle_request(req: SocketRequest) -> SocketResponse {
+    // Validate request type and required fields per request type
+    match req.request_type.as_str() {
+        "create_sandbox" => {
+            // Optional: image, ram, cpu, packages
+        }
+        "create_container" => {
+            if req.sandbox.is_none() {
+                return SocketResponse::err("create_container: missing sandbox id");
+            }
+        }
+        "invoke_tool" => {
+            if req.sandbox.is_none() {
+                return SocketResponse::err("invoke_tool: missing sandbox id");
+            }
+            if req.container.is_none() {
+                return SocketResponse::err("invoke_tool: missing container id");
+            }
+            if req.name.is_none() || req.name.as_ref().map(|n| n.is_empty()).unwrap_or(true) {
+                return SocketResponse::err("invoke_tool: missing tool name");
+            }
+        }
+        "destroy_sandbox" => {
+            if req.sandbox.is_none() {
+                return SocketResponse::err("destroy_sandbox: missing sandbox id");
+            }
+        }
+        "list" => {
+            // No required fields
+        }
+        "set_policy" => {
+            if req.sandbox.is_none() {
+                return SocketResponse::err("set_policy: missing sandbox id");
+            }
+            if req.input.is_none() {
+                return SocketResponse::err("set_policy: missing policy input");
+            }
+        }
+        "list_containers" => {
+            if req.sandbox.is_none() {
+                return SocketResponse::err("list_containers: missing sandbox id");
+            }
+        }
+        "create_channel" | "send_message" | "read_messages" => {
+            if req.sandbox.is_none() {
+                return SocketResponse::err(&format!("{}: missing sandbox id", req.request_type));
+            }
+        }
+        _ => {
+            return SocketResponse::err(&format!("unknown request type: {}", req.request_type));
+        }
+    }
+
     match req.request_type.as_str() {
 
         // ── create_sandbox ──────────────────────────────────────────────────
@@ -252,6 +304,7 @@ fn handle_request(req: SocketRequest) -> SocketResponse {
         // ── invoke_tool ─────────────────────────────────────────────────────
         // All tool execution happens inside the container via chroot.
         // Nothing runs on the host OS.
+        // IMPORTANT: Lock is released before tool execution to allow other operations.
         "invoke_tool" => {
             let sandbox_id = match req.sandbox.as_ref().and_then(parse_id) {
                 Some(id) => id,
@@ -267,19 +320,47 @@ fn handle_request(req: SocketRequest) -> SocketResponse {
             };
             let input = req.input.clone().unwrap_or(json!({}));
 
-            let mut store = SANDBOXES.lock().unwrap();
-            let sb = match store.get_mut(&sandbox_id) {
-                Some(s) => s,
-                None => return SocketResponse::err(format!("sandbox {} not found", sandbox_id)),
-            };
+            // CRITICAL FIX: Prepare tool while holding lock, then drop lock before execution.
+            // This prevents long-running tools from blocking all other operations.
+            let prep_result = {
+                let store = SANDBOXES.lock().unwrap();
+                let sb = match store.get(&sandbox_id) {
+                    Some(s) => s,
+                    None => return SocketResponse::err(format!("sandbox {} not found", sandbox_id)),
+                };
+                sb.prepare_tool_invocation(container_id, &name, &input)
+            }; // lock is released here
 
-            match sb.invoke_tool_in_container(container_id, &name, input) {
-                Ok(val) => {
-                    let _ = AUDITOR.record_event(
-                        AuditEvent::new(EventType::ToolInvoked, sandbox_id, "tool invoked")
-                            .with_details(json!({ "tool": name })),
-                    );
-                    SocketResponse::ok(Some(val))
+            match prep_result {
+                Ok(prep) => {
+                    // Execute tool WITHOUT holding SANDBOXES lock.
+                    // Other requests can proceed in parallel.
+                    let result = crate::sandbox::execute_tool_unlocked(prep, input);
+
+                    // Re-acquire lock only for audit logging (should be fast).
+                    if result.is_ok() {
+                        let _ = AUDITOR.record_event(
+                            AuditEvent::new(EventType::ToolInvoked, sandbox_id, "tool invoked")
+                                .with_details(json!({ "tool": name })),
+                        );
+                    }
+
+                    match result {
+                        Ok(val) => SocketResponse::ok(Some(val)),
+                        Err(e) => {
+                            let err_str = e.to_string();
+                            let event_type = if err_str.contains("security policy denied") {
+                                EventType::SecurityViolation
+                            } else {
+                                EventType::ToolFailed
+                            };
+                            let _ = AUDITOR.record_event(
+                                AuditEvent::new(event_type, sandbox_id, "tool error")
+                                    .with_details(json!({ "tool": name, "error": err_str })),
+                            );
+                            SocketResponse::err(e)
+                        }
+                    }
                 }
                 Err(e) => {
                     let err_str = e.to_string();
@@ -289,7 +370,7 @@ fn handle_request(req: SocketRequest) -> SocketResponse {
                         EventType::ToolFailed
                     };
                     let _ = AUDITOR.record_event(
-                        AuditEvent::new(event_type, sandbox_id, "tool error")
+                        AuditEvent::new(event_type, sandbox_id, "tool prep failed")
                             .with_details(json!({ "tool": name, "error": err_str })),
                     );
                     SocketResponse::err(e)
@@ -302,6 +383,25 @@ fn handle_request(req: SocketRequest) -> SocketResponse {
             let store = SANDBOXES.lock().unwrap();
             let ids: Vec<String> = store.keys().map(|id| id.to_string()).collect();
             SocketResponse::ok(Some(json!(ids)))
+        }
+
+        // ── list_containers ────────────────────────────────────────────────
+        "list_containers" => {
+            let sandbox_id = match req.sandbox.as_ref().and_then(parse_id) {
+                Some(id) => id,
+                None => return SocketResponse::err("missing sandbox id"),
+            };
+            let store = SANDBOXES.lock().unwrap();
+            match store.get(&sandbox_id) {
+                Some(sb) => {
+                    let cids: Vec<String> = sb.list_containers()
+                        .iter()
+                        .map(|id| id.to_string())
+                        .collect();
+                    SocketResponse::ok(Some(json!(cids)))
+                }
+                None => SocketResponse::err(format!("sandbox {} not found", sandbox_id)),
+            }
         }
 
         // ── destroy_sandbox ─────────────────────────────────────────────────

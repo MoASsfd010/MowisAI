@@ -1,8 +1,5 @@
-use crate::tools::common::{resolve_path, Tool, ToolContext};
-use nix::sys::signal::{kill, Signal};
-use nix::unistd::Pid;
+use crate::tools::common::{Tool, ToolContext};
 use serde_json::{json, Value};
-use std::env;
 use std::process::Command;
 
 // ============== SHELL TOOLS (5) ==============
@@ -18,24 +15,19 @@ impl Tool for RunCommandTool {
             .ok_or_else(|| anyhow::anyhow!("run_command: missing cmd"))?;
         let cwd = input.get("cwd").and_then(|v| v.as_str());
 
-        let mut command = if let Some(root) = &ctx.root_path {
-            let mut c = Command::new("chroot");
-            let cwd_str = cwd.unwrap_or("/");
-            c.arg(root)
-                .arg("/bin/sh")
-                .arg("-c")
-                .arg(&format!("cd {} 2>/dev/null && {}", cwd_str, cmd));
-            c
-        } else {
-            let mut c = Command::new("sh");
-            c.arg("-c").arg(cmd);
-            if let Some(dir) = cwd {
-                c.current_dir(dir);
-            }
-            c
-        };
+        // CRITICAL: run_command must always execute in container context (chroot).
+        // Running arbitrary commands on the sandbox root would be a privilege escalation.
+        let root = ctx.root_path.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("run_command: must execute within a container (no root_path)"))?;
 
-        let output = command.output()?;
+        let mut c = Command::new("chroot");
+        let cwd_str = cwd.unwrap_or("/");
+        c.arg(root)
+            .arg("/bin/sh")
+            .arg("-c")
+            .arg(&format!("cd {} 2>/dev/null && {}", cwd_str, cmd));
+
+        let output = c.output()?;
         Ok(json!({
             "exit_code": output.status.code().unwrap_or(-1),
             "stdout": String::from_utf8_lossy(&output.stdout).to_string(),
@@ -62,22 +54,22 @@ impl Tool for RunScriptTool {
                 _ => "/bin/sh",
             });
 
+        // CRITICAL: run_script must always execute in container context (chroot).
+        let root = ctx.root_path.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("run_script: must execute within a container (no root_path)"))?;
+
         if let Some(script) = inline_script {
             use std::io::Write;
             let tmp_path = format!("/tmp/_script_{}.sh",
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().subsec_nanos());
-            let host_path = if let Some(root) = &ctx.root_path {
-                format!("{}{}", root.display(), tmp_path)
-            } else { tmp_path.clone() };
+            let host_path = format!("{}{}", root.display(), tmp_path);
             let mut f = std::fs::File::create(&host_path)?;
             f.write_all(script.as_bytes())?;
             drop(f);
-            let output = if let Some(root) = &ctx.root_path {
-                let mut c = Command::new("chroot");
-                c.arg(root).arg(interpreter).arg(&tmp_path);
-                c.output()?
-            } else { Command::new(interpreter).arg(&host_path).output()? };
+            let mut c = Command::new("chroot");
+            c.arg(root).arg(interpreter).arg(&tmp_path);
+            let output = c.output()?;
             let _ = std::fs::remove_file(&host_path);
             Ok(json!({
                 "stdout": String::from_utf8_lossy(&output.stdout).to_string(),
@@ -86,12 +78,9 @@ impl Tool for RunScriptTool {
                 "success": output.status.success()
             }))
         } else if let Some(p) = path_str {
-            let path = resolve_path(ctx, p);
-            let output = if let Some(root) = &ctx.root_path {
-                let mut c = Command::new("chroot");
-                c.arg(root).arg(interpreter).arg(p);
-                c.output()?
-            } else { Command::new(interpreter).arg(&path).output()? };
+            let mut c = Command::new("chroot");
+            c.arg(root).arg(interpreter).arg(p);
+            let output = c.output()?;
             Ok(json!({
                 "stdout": String::from_utf8_lossy(&output.stdout).to_string(),
                 "stderr": String::from_utf8_lossy(&output.stderr).to_string(),

@@ -72,7 +72,8 @@ pub extern "C" fn agent_string_free(s: *mut c_char) {
         return;
     }
     unsafe {
-        CString::from_raw(s);
+        // `from_raw` returns a CString which drops when it goes out of scope.
+        let _ = CString::from_raw(s);
     }
 }
 
@@ -83,7 +84,7 @@ pub extern "C" fn agent_sandbox_free(sb: *mut Sandbox) {
         return;
     }
     unsafe {
-        Box::from_raw(sb);
+        let _ = Box::from_raw(sb);
     }
 }
 
@@ -99,7 +100,7 @@ pub extern "C" fn agent_memory_free(mem: *mut AgentMemory) {
         return;
     }
     unsafe {
-        Box::from_raw(mem);
+        let _ = Box::from_raw(mem);
     }
 }
 
@@ -118,7 +119,7 @@ pub extern "C" fn agent_loop_free(loop_ptr: *mut AgentLoop) {
         return;
     }
     unsafe {
-        Box::from_raw(loop_ptr);
+        let _ = Box::from_raw(loop_ptr);
     }
 }
 
