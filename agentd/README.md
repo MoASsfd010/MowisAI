@@ -6,6 +6,14 @@ and executed in response to prompts or programmatic requests.  The library can
 be used directly from Rust code, exposed via a small C FFI, or driven via a
 lightweight Unix socket API (see `src/socket_server.rs`).
 
+
+TO RUN THE ENGINE AND START THE SOCKET. 
+cd agentd
+cargo build --release
+pkill agentd 2>/dev/null
+sudo ./target/release/agentd socket --path /tmp/agentd.sock
+
+
 ---
 
 ## 🚀 Key Concepts
