@@ -419,4 +419,30 @@ mod tests {
         let rules = filter.to_bpf_rules();
         assert!(!rules["rules"].is_null());
     }
+
+    #[test]
+    fn test_set_policy_restrictive() {
+        let policy = SecurityPolicy::default_restrictive();
+        assert_eq!(policy.name, "restrictive");
+        assert!(policy.check_syscall("read"));
+        assert!(!policy.check_syscall("clone"));
+    }
+
+    #[test]
+    fn test_set_policy_permissive() {
+        let policy = SecurityPolicy::default_permissive();
+        assert_eq!(policy.name, "permissive");
+        // Permissive policies should allow more syscalls
+        assert!(policy.check_syscall("read"));
+    }
+
+    #[test]
+    fn test_update_security_policy() {
+        let mut policy = SecurityPolicy::default_restrictive();
+        assert_eq!(policy.allow_shell_execution, false);
+        
+        // Verify policy can be modified
+        policy.allow_shell_execution = true;
+        assert!(policy.allow_shell_execution);
+    }
 }

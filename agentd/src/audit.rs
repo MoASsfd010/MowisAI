@@ -353,4 +353,32 @@ mod tests {
         let engine = ReplayEngine::new(events);
         assert_eq!(engine.replay_tool_invocations().len(), 1);
     }
+
+    #[test]
+    fn test_audit_stats() {
+        // Test that we can get stats without requiring file system initialization
+        let stats = AuditStats {
+            total_events: 5,
+            events_by_type: {
+                let mut map = std::collections::HashMap::new();
+                map.insert("ToolInvoked".to_string(), 3);
+                map.insert("SandboxCreated".to_string(), 2);
+                map
+            },
+            actors: vec![1, 2, 3],
+            time_span: (1000, 2000),
+        };
+
+        let json = serde_json::to_value(&stats).unwrap();
+        assert_eq!(json["total_events"], 5);
+        assert_eq!(json["actors"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn test_compliance_checker_policies() {
+        let mut checker = ComplianceChecker::new();
+        checker.add_policy("test_policy", "rule1");
+        let policies = checker.get_policies();
+        assert!(policies["test_policy"].is_string());
+    }
 }

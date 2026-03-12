@@ -315,3 +315,47 @@ impl MemoryPersistence {
         Ok(serde_json::from_str(&json)?)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_memory_set_and_get() {
+        let agent_id = 1u64;
+        let session_id = 100u64;
+        let mut memory = AgentMemory::new(agent_id, session_id);
+
+        // Test set_context
+        memory.short_term.set_context("mykey".into(), json!("myvalue"));
+
+        // Test get_context
+        let value = memory.short_term.get_context("mykey");
+        assert_eq!(value, Some(&json!("myvalue")));
+    }
+
+    #[test]
+    fn test_short_term_memory_context() {
+        let mut stm = ShortTermMemory::new(42);
+        assert_eq!(stm.session_id, 42);
+
+        stm.set_context("key1".into(), json!("value1"));
+        assert_eq!(stm.get_context("key1"), Some(&json!("value1")));
+
+        stm.set_context("key2".into(), json!({"nested": "object"}));
+        assert_eq!(stm.get_context("key2"), Some(&json!({"nested": "object"})));
+    }
+
+    #[test]
+    fn test_memory_serialization() {
+        let mut memory = AgentMemory::new(1, 1);
+        memory.short_term.set_context("test".into(), json!("value"));
+
+        let json = memory.serialize_to_json().unwrap();
+        assert!(!json.is_null());
+
+        let deserialized = AgentMemory::deserialize_from_json(&json).unwrap();
+        assert_eq!(deserialized.short_term.get_context("test"), Some(&json!("value")));
+    }
+}

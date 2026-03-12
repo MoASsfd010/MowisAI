@@ -5,17 +5,26 @@
 
 pub mod agent;
 pub mod agent_loop;
+pub mod agentd_client;
+pub mod hub_agent_client;
+pub mod claude_integration;
 pub mod audit;
 pub mod buckets;
 pub mod channels;
+pub mod dependency_graph;
+pub mod hub_agent;
 pub mod image_manager;
 pub mod memory;
+pub mod orchestrator;
 pub mod persistence;
+pub mod protocol;
+pub mod runtime;
 pub mod sandbox;
 pub mod security;
 pub mod socket_server;
 pub mod tool_registry;
 pub mod tools;
+pub mod worker_agent;
 
 // re-export common types at the top level for convenience
 pub use agent::{Agent, AgentConfig, AgentResult};
@@ -24,6 +33,7 @@ pub use audit::{AuditEvent, AuditLogger, SecurityAuditor};
 pub use image_manager::ImageManager;
 pub use memory::{AgentMemory, LongTermMemory, ShortTermMemory};
 pub use persistence::{Checkpointer, PersistenceManager, RecoveryJournal, WriteAheadLog};
+pub use protocol::*;
 pub use sandbox::ResourceLimits;
 pub use sandbox::Sandbox;
 pub use security::{SeccompFilter, SecurityContext, SecurityPolicy};
