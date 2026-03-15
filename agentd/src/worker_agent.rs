@@ -9,7 +9,7 @@
 /// - Signals idle state to Runtime
 
 use crate::protocol::*;
-use crate::agentd_client::{AgentdClient, InvokeToolParams, InvokeToolResponse};
+// use runtime::agentd_client::{AgentdClient, InvokeToolParams, InvokeToolResponse};  // TODO: uncomment when worker_agent moves to orchestrator/ crate
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -72,7 +72,7 @@ pub struct PlanningStep {
 /// Worker Agent instance
 pub struct WorkerAgent {
     config: WorkerConfig,
-    client: AgentdClient,
+    // client: AgentdClient,  // TODO: uncomment when worker_agent moves to orchestrator/ crate
     state: std::sync::Mutex<WorkerExecutionState>,
     current_assignment: std::sync::Mutex<Option<WorkerAssignment>>,
     execution_history: std::sync::Mutex<Vec<ToolCallRecord>>,
@@ -82,11 +82,12 @@ pub struct WorkerAgent {
 
 impl WorkerAgent {
     /// Create a new Worker Agent
+    /// NOTE: Will use AgentdClient when worker_agent moves to orchestrator/ crate
     pub fn new(config: WorkerConfig) -> Self {
-        let client = AgentdClient::new(config.agentd_socket.clone());
+        // let client = AgentdClient::new(config.agentd_socket.clone());  // TODO: uncomment later
         WorkerAgent {
             config,
-            client,
+            // client,  // TODO: uncomment later
             state: std::sync::Mutex::new(WorkerExecutionState::Idle),
             current_assignment: std::sync::Mutex::new(None),
             execution_history: std::sync::Mutex::new(Vec::new()),
@@ -168,31 +169,33 @@ impl WorkerAgent {
     }
 
     /// Execute the planned steps
-    fn execute_plan(&self, assignment: &WorkerAssignment) -> WorkerResult<()> {
-        // Execute tool invocations for the task via real agentd
-        let mut output = serde_json::json!({
-            "task": assignment.task_description,
-            "worker": assignment.worker_name,
-            "status": "completed",
-            "timestamp": current_timestamp(),
-        });
-
-        // Execute file operation (read requirements)
-        let file_contents = self.invoke_file_operation("read", "/task/requirements.md")?;
-        
-        // Execute code
-        let code_output = self.invoke_code_execution(&assignment.task_description)?;
-
-        // Execute git operations if available
-        if assignment.tools_available.contains(&"git".to_string()) {
-            let git_status = self.invoke_git_operation()?;
-            output["git_status"] = git_status;
-        }
-
-        output["code_output"] = code_output;
-        output["file_contents"] = file_contents;
-
-        *self.work_output.lock().unwrap() = Some(output);
+    /// NOTE: stubbed - will be fully implemented when worker_agent moves to orchestrator/ crate
+    fn execute_plan(&self, _assignment: &WorkerAssignment) -> WorkerResult<()> {
+        // TODO: uncomment when worker_agent moves to orchestrator/ crate
+        // // Execute tool invocations for the task via real agentd
+        // let mut output = serde_json::json!({
+        //     "task": assignment.task_description,
+        //     "worker": assignment.worker_name,
+        //     "status": "completed",
+        //     "timestamp": current_timestamp(),
+        // });
+        //
+        // // Execute file operation (read requirements)
+        // let file_contents = self.invoke_file_operation("read", "/task/requirements.md")?;
+        // 
+        // // Execute code
+        // let code_output = self.invoke_code_execution(&assignment.task_description)?;
+        //
+        // // Execute git operations if available
+        // if assignment.tools_available.contains(&"git".to_string()) {
+        //     let git_status = self.invoke_git_operation()?;
+        //     output["git_status"] = git_status;
+        // }
+        //
+        // output["code_output"] = code_output;
+        // output["file_contents"] = file_contents;
+        //
+        // *self.work_output.lock().unwrap() = Some(output);
         Ok(())
     }
 
@@ -283,6 +286,7 @@ impl WorkerAgent {
 
     // Real tool invocation methods (via agentd)
 
+    /*  // TODO: uncomment when worker_agent moves to orchestrator/ crate
     fn invoke_tool_via_agentd(
         &self,
         tool_name: &str,
@@ -314,7 +318,9 @@ impl WorkerAgent {
             ))),
         }
     }
+    */  // END TODO
 
+    /*  // TODO: uncomment when worker_agent moves to orchestrator/ crate
     fn invoke_file_operation(
         &self,
         operation: &str,
@@ -335,7 +341,9 @@ impl WorkerAgent {
 
         self.invoke_tool_via_agentd("shell", input)
     }
+    */  // END TODO
 
+    /*  // TODO: uncomment when worker_agent moves to orchestrator/ crate
     fn invoke_git_operation(&self) -> WorkerResult<serde_json::Value> {
         let input = serde_json::json!({
             "command": "status"
@@ -343,6 +351,7 @@ impl WorkerAgent {
 
         self.invoke_tool_via_agentd("git", input)
     }
+    */  // END TODO
 }
 
 /// Get current Unix timestamp

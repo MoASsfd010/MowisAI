@@ -5,7 +5,6 @@
 
 pub mod agent;
 pub mod agent_loop;
-pub mod agentd_client;
 pub mod hub_agent_client;
 pub mod claude_integration;
 pub mod audit;
@@ -15,10 +14,8 @@ pub mod dependency_graph;
 pub mod hub_agent;
 pub mod image_manager;
 pub mod memory;
-pub mod orchestrator;
 pub mod persistence;
 pub mod protocol;
-pub mod runtime;
 pub mod sandbox;
 pub mod security;
 pub mod socket_server;

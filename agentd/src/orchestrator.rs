@@ -11,7 +11,7 @@
 
 use crate::dependency_graph::{ComplexityAnalyzer, DependencyGraphBuilder};
 use crate::protocol::*;
-use crate::runtime::Runtime;
+// use runtime::Runtime;  // TODO: uncomment when orchestrator moves to orchestrator/ crate
 use crate::hub_agent_client::HubAgentClient;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -40,19 +40,21 @@ pub struct OrchestratorConfig {
 }
 
 /// The Global Orchestrator
+/// NOTE: This struct will move to orchestrator/ crate. Runtime field is temporarily removed.
 pub struct GlobalOrchestrator {
     config: OrchestratorConfig,
-    runtime: Runtime,
+    // runtime: Runtime,  // TODO: uncomment when orchestrator moves to orchestrator/ crate
     sessions: std::sync::Mutex<HashMap<String, ExecutionSession>>,
 }
 
 impl GlobalOrchestrator {
     /// Create a new Global Orchestrator
+    /// NOTE: Will use Runtime when orchestrator moves to orchestrator/ crate
     pub fn new(config: OrchestratorConfig) -> Self {
-        let runtime = Runtime::new(config.runtime_socket_base.clone());
+        // let runtime = Runtime::new(config.runtime_socket_base.clone());  // TODO: uncomment later
         GlobalOrchestrator {
             config,
-            runtime,
+            // runtime,  // TODO: uncomment later
             sessions: std::sync::Mutex::new(HashMap::new()),
         }
     }

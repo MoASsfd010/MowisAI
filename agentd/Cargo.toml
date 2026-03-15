@@ -25,7 +25,3 @@ fastrand = "1.9"
 which = "4"
 csv = "1.2"
 urlencoding = "2.1"
-
-
-[workspace]
-
