@@ -52,6 +52,15 @@ enum Commands {
         #[arg(long, default_value = "/tmp/agentd.sock")]
         path: String,
     },
+    /// Vertex AI Gemini loop: tools executed via agentd socket
+    Agent {
+        #[arg(long)]
+        prompt: String,
+        #[arg(long)]
+        project: String,
+        #[arg(long, default_value = "/tmp/agentd.sock")]
+        socket: String,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -95,6 +104,13 @@ fn main() -> anyhow::Result<()> {
             if let Err(e) = socket_server::run_server(&path) {
                 eprintln!("socket server error: {}", e);
             }
+        }
+        Commands::Agent {
+            prompt,
+            project,
+            socket,
+        } => {
+            libagent::vertex_agent::run(&prompt, &project, &socket)?;
         }
     }
     Ok(())

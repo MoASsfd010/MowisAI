@@ -22,6 +22,7 @@ pub mod security;
 pub mod socket_server;
 pub mod tool_registry;
 pub mod tools;
+pub mod vertex_agent;
 pub mod worker_agent;
 
 /// Re-export infrastructure `Runtime` (crate `runtime`) for orchestration callers.
