@@ -14,6 +14,7 @@ pub mod dependency_graph;
 pub mod hub_agent;
 pub mod image_manager;
 pub mod memory;
+pub mod orchestration;
 pub mod orchestrator;
 pub mod persistence;
 pub mod protocol;

@@ -61,6 +61,17 @@ enum Commands {
         #[arg(long, default_value = "/tmp/agentd.sock")]
         socket: String,
     },
+    /// Multi-sandbox orchestration (Gemini plan + parallel agents + synthesis)
+    Orchestrate {
+        #[arg(long)]
+        prompt: String,
+        #[arg(long)]
+        project: String,
+        #[arg(long, default_value = "/tmp/agentd.sock")]
+        socket: String,
+        #[arg(long, default_value_t = 10)]
+        max_agents: usize,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -111,6 +122,19 @@ fn main() -> anyhow::Result<()> {
             socket,
         } => {
             libagent::vertex_agent::run(&prompt, &project, &socket)?;
+        }
+        Commands::Orchestrate {
+            prompt,
+            project,
+            socket,
+            max_agents,
+        } => {
+            libagent::orchestration::orchestrator::run(
+                &prompt,
+                &project,
+                &socket,
+                max_agents,
+            )?;
         }
     }
     Ok(())
