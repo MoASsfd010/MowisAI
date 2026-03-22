@@ -1,5 +1,5 @@
 [workspace]
-members = ["agentd", "runtime"]
+members = ["agentd", "agentd-protocol", "runtime"]
 resolver = "2"
 
 [workspace.dependencies]

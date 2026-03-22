@@ -14,6 +14,7 @@ pub mod dependency_graph;
 pub mod hub_agent;
 pub mod image_manager;
 pub mod memory;
+pub mod orchestrator;
 pub mod persistence;
 pub mod protocol;
 pub mod sandbox;
@@ -22,6 +23,12 @@ pub mod socket_server;
 pub mod tool_registry;
 pub mod tools;
 pub mod worker_agent;
+
+/// Re-export infrastructure `Runtime` (crate `runtime`) for orchestration callers.
+pub mod runtime {
+    pub use ::runtime::Runtime;
+    pub use ::runtime::{RuntimeError, RuntimeResult};
+}
 
 // re-export common types at the top level for convenience
 pub use agent::{Agent, AgentConfig, AgentResult};
