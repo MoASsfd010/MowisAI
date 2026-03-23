@@ -57,6 +57,12 @@ pub struct SocketRequest {
     pub container: Option<Value>,
     /// Extra packages to install on top of core packages
     pub packages: Option<Vec<String>>,
+    /// Optional Git repository URL to seed into sandbox baseline (/workspace)
+    pub seed_repo_url: Option<String>,
+    /// Optional branch or ref for repo seeding
+    pub seed_repo_branch: Option<String>,
+    /// Optional subdirectory inside /workspace where repo should be cloned
+    pub seed_repo_subdir: Option<String>,
     pub name: Option<String>,
     pub input: Option<Value>,
     pub command: Option<String>,
@@ -299,6 +305,9 @@ fn handle_request(req: SocketRequest) -> SocketResponse {
         "create_sandbox" => {
             let image = req.image.clone().unwrap_or_else(|| "alpine".to_string());
             let limits = ResourceLimits { ram_bytes: req.ram, cpu_millis: req.cpu };
+            let seed_repo_url = req.seed_repo_url.clone();
+            let seed_repo_branch = req.seed_repo_branch.clone();
+            let seed_repo_subdir = req.seed_repo_subdir.clone();
 
             let mut sb = match Sandbox::new_with_image(limits, Some(&image)) {
                 Ok(s) => s,
@@ -321,6 +330,21 @@ fn handle_request(req: SocketRequest) -> SocketResponse {
                 log::warn!("sandbox {} package install warning: {}", id, e);
                 // Non-fatal: continue even if some optional packages failed.
                 // Core failures will be caught when the first tool runs.
+            }
+
+            // Optional: seed a repository into sandbox baseline so all containers share it.
+            if let Some(repo_url) = seed_repo_url.as_ref() {
+                println!(
+                    "[agentd] Seeding repo {} into sandbox {} ...",
+                    repo_url, id
+                );
+                if let Err(e) = sb.seed_git_repo(
+                    repo_url,
+                    seed_repo_branch.as_deref(),
+                    seed_repo_subdir.as_deref(),
+                ) {
+                    log::warn!("sandbox {} repo seed warning: {}", id, e);
+                }
             }
 
             // Register all tools into the sandbox

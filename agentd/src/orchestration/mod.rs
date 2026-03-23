@@ -1,7 +1,13 @@
 //! Multi-sandbox orchestration: Vertex Gemini planner, executor, and synthesis.
 
 mod agent_runner;
+pub mod architect;
+pub mod context_gatherer;
 mod executor;
+pub mod sandbox_manager;
+pub mod sandbox_owner;
+pub mod types;
+pub mod worker;
 mod planner;
 pub mod orchestrator;
 mod sandbox_profiles;

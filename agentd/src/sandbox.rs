@@ -305,6 +305,41 @@ impl Sandbox {
         self.root.path()
     }
 
+    /// Seed a git repository into the sandbox baseline under /workspace.
+    /// All subsequently created containers inherit this repository in their lower layer.
+    pub fn seed_git_repo(
+        &self,
+        repo_url: &str,
+        branch: Option<&str>,
+        subdir: Option<&str>,
+    ) -> Result<()> {
+        let target = subdir.unwrap_or("repo");
+        let mut cmd = format!(
+            "mkdir -p /workspace && cd /workspace && rm -rf '{}' && git clone '{}' '{}'",
+            target, repo_url, target
+        );
+        if let Some(branch) = branch {
+            cmd.push_str(&format!(" && cd '{}' && git checkout '{}'", target, branch));
+        }
+
+        let output = Command::new("chroot")
+            .arg(self.root.path())
+            .arg("/bin/sh")
+            .arg("-c")
+            .arg(&cmd)
+            .output()
+            .context("seed_git_repo chroot failed")?;
+
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!(
+                "seed_git_repo failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ))
+        }
+    }
+
     /// write resource limits into cgroup v2 if available and running as root.
     fn apply_limits(&mut self) -> Result<()> {
         let cgroup_base = Path::new("/sys/fs/cgroup/agentd");

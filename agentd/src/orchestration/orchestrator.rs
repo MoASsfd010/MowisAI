@@ -1,16 +1,18 @@
-//! Public entry: plan → execute → synthesize (all via Vertex Gemini 2.5 Pro).
+//! Five-layer orchestration public entry.
 
 use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::sync::mpsc;
+use std::thread;
 use std::time::Duration;
 
-use super::executor::execute;
-use super::planner::plan;
-use super::AgentOutput;
+use super::architect::create_blueprint;
+use super::context_gatherer::gather_context;
+use super::sandbox_manager::run_sandbox;
+use super::sandbox_owner::create_sandbox_plan;
+use super::types::{SandboxResult, SandboxExecutionPlan};
 use super::{gcloud_access_token, vertex_generate_url, HTTP_TIMEOUT_SECS};
 
-/// End-to-end orchestration: same LLM (Gemini 2.5 Pro) for planning, every agent, and final synthesis.
 pub fn run(
     prompt: &str,
     project_id: &str,
@@ -24,7 +26,6 @@ pub fn run(
             "orchestration requires Unix (agentd uses Unix domain sockets)"
         ));
     }
-
     #[cfg(unix)]
     {
         run_inner(prompt, project_id, socket_path, max_agents)
@@ -38,27 +39,98 @@ fn run_inner(
     socket_path: &str,
     max_agents: usize,
 ) -> Result<String> {
-    println!("[orchestrator] Analyzing task…");
-    let max_tasks = max_agents.max(1);
-    let p = plan(prompt, project_id, max_tasks).context("planning")?;
-    println!(
-        "[orchestrator] Plan: {} task(s) across team types",
-        p.tasks.len()
-    );
+    println!("[layer1] Gathering project context...");
+    let context = gather_context(prompt, project_id, socket_path).context("layer1 context")?;
 
-    let outputs: HashMap<String, super::AgentOutput> =
-        execute(&p, socket_path, project_id, max_agents).context("execute")?;
+    println!("[layer2] Creating implementation blueprint...");
+    let mut blueprint = create_blueprint(&context, project_id).context("layer2 architect")?;
+    cap_agents(&mut blueprint, max_agents);
+    println!("[layer2] Blueprint sandboxes: {}", blueprint.sandboxes.len());
 
-    println!("[orchestrator] Synthesizing final result…");
-    let synthesized = synthesize(prompt, &outputs, project_id)?;
-    println!("[result] {}", synthesized);
-    Ok(synthesized)
+    println!("[layer3] Building per-sandbox execution plans...");
+    let plans = create_sandbox_plans_parallel(&context, &blueprint, project_id, socket_path)?;
+    println!("[layer3] Created {} sandbox plan(s)", plans.len());
+
+    println!("[layer4] Running sandbox managers...");
+    let sandbox_results = run_sandbox_managers_parallel(&plans, project_id, socket_path)?;
+
+    println!("[layer5] Synthesizing final output...");
+    let final_text = synthesize(prompt, &context, &blueprint, &sandbox_results, project_id)?;
+    println!("[result] {}", final_text);
+    Ok(final_text)
+}
+
+#[cfg(unix)]
+fn create_sandbox_plans_parallel(
+    context: &super::types::ProjectContext,
+    blueprint: &super::types::ImplementationBlueprint,
+    project_id: &str,
+    socket_path: &str,
+) -> Result<Vec<SandboxExecutionPlan>> {
+    let (tx, rx) = mpsc::channel::<Result<SandboxExecutionPlan>>();
+    for cfg in blueprint.sandboxes.clone() {
+        let tx = tx.clone();
+        let context = context.clone();
+        let project_id = project_id.to_string();
+        let socket_path = socket_path.to_string();
+        thread::spawn(move || {
+            let res = create_sandbox_plan(&context, &cfg, &project_id, &socket_path);
+            let _ = tx.send(res);
+        });
+    }
+    drop(tx);
+
+    let mut out = Vec::new();
+    for recv in rx {
+        out.push(recv?);
+    }
+    Ok(out)
+}
+
+#[cfg(unix)]
+fn run_sandbox_managers_parallel(
+    plans: &[SandboxExecutionPlan],
+    project_id: &str,
+    socket_path: &str,
+) -> Result<Vec<SandboxResult>> {
+    let (tx, rx) = mpsc::channel::<Result<SandboxResult>>();
+    for plan in plans.iter().cloned() {
+        let tx = tx.clone();
+        let project_id = project_id.to_string();
+        let socket_path = socket_path.to_string();
+        thread::spawn(move || {
+            let res = run_sandbox(&plan, &project_id, &socket_path);
+            let _ = tx.send(res);
+        });
+    }
+    drop(tx);
+
+    let mut out = Vec::new();
+    for recv in rx {
+        out.push(recv?);
+    }
+    Ok(out)
+}
+
+#[cfg(unix)]
+fn cap_agents(blueprint: &mut super::types::ImplementationBlueprint, max_agents: usize) {
+    let total: usize = blueprint.sandboxes.iter().map(|s| s.agent_count).sum();
+    if total <= max_agents.max(1) {
+        return;
+    }
+    let ratio = max_agents.max(1) as f64 / total as f64;
+    for sb in &mut blueprint.sandboxes {
+        let scaled = ((sb.agent_count as f64) * ratio).round() as usize;
+        sb.agent_count = scaled.max(1);
+    }
 }
 
 #[cfg(unix)]
 fn synthesize(
-    original_prompt: &str,
-    outputs: &HashMap<String, AgentOutput>,
+    prompt: &str,
+    context: &super::types::ProjectContext,
+    blueprint: &super::types::ImplementationBlueprint,
+    results: &[SandboxResult],
     project_id: &str,
 ) -> Result<String> {
     let url = vertex_generate_url(project_id);
@@ -67,69 +139,54 @@ fn synthesize(
         .build()
         .context("reqwest client")?;
 
-    let mut body_text = String::new();
-    body_text.push_str("Original user request:\n");
-    body_text.push_str(original_prompt);
-    body_text.push_str("\n\n--- Agent task outputs ---\n");
-    for (id, o) in outputs {
-        body_text.push_str(&format!(
-            "\n## Task {}\n- success: {}\n- summary:\n{}\n- files_created: {:?}\n",
-            id, o.success, o.output, o.files_created
+    let mut summary = String::new();
+    for r in results {
+        summary.push_str(&format!(
+            "\n## Sandbox {}\n- success: {}\n- workers: {}\n",
+            r.sandbox_id,
+            r.success,
+            r.agent_results.len()
         ));
     }
-    body_text.push_str(
-        "\nProduce one coherent final answer for the user: what was accomplished, key artifacts, and any follow-ups. Be concise but complete.",
-    );
-
     let body = json!({
         "contents": [{
             "role": "user",
-            "parts": [{ "text": body_text }]
+            "parts": [{
+                "text": format!(
+                    "User prompt:\n{}\n\nProject context:\n{}\n\nBlueprint:\n{}\n\nSandbox results:\n{}\n\nProvide final concise delivery summary and any unresolved issues.",
+                    prompt,
+                    serde_json::to_string_pretty(context).unwrap_or_default(),
+                    serde_json::to_string_pretty(blueprint).unwrap_or_default(),
+                    summary
+                )
+            }]
         }],
-        "generationConfig": {
-            "temperature": 0.45
-        }
+        "generationConfig": { "temperature": 0.35 }
     });
 
     let token = gcloud_access_token()?;
-    let http_resp = client
-        .post(&url)
-        .bearer_auth(&token)
+    let resp = client
+        .post(url)
+        .bearer_auth(token)
         .header("Content-Type", "application/json")
         .json(&body)
         .send()
-        .context("synthesis generateContent HTTP")?;
+        .context("synthesis HTTP")?;
 
-    if !http_resp.status().is_success() {
-        let status = http_resp.status();
-        let text = http_resp.text().unwrap_or_default();
-        return Err(anyhow!("Vertex synthesis error {}: {}", status, text));
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().unwrap_or_default();
+        return Err(anyhow!("synthesis error {}: {}", status, text));
     }
-
-    let response: Value = http_resp.json().context("parse synthesis JSON")?;
-    extract_text(&response)
-}
-
-#[cfg(unix)]
-fn extract_text(response: &Value) -> Result<String> {
-    let candidate = response
-        .get("candidates")
-        .and_then(|c| c.as_array())
-        .and_then(|a| a.first())
-        .ok_or_else(|| anyhow!("synthesis: no candidates"))?;
-    let parts = candidate
-        .pointer("/content/parts")
-        .and_then(|p| p.as_array())
-        .ok_or_else(|| anyhow!("synthesis: missing parts"))?;
-    let mut s = String::new();
-    for part in parts {
-        if let Some(t) = part.get("text").and_then(|v| v.as_str()) {
-            s.push_str(t);
-        }
+    let data: Value = resp.json().context("parse synthesis JSON")?;
+    let text = data
+        .pointer("/candidates/0/content/parts/0/text")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if text.is_empty() {
+        return Err(anyhow!("synthesis empty output"));
     }
-    let t = s.trim().to_string();
-    if t.is_empty() {
-        return Err(anyhow!("synthesis: empty text"));
-    }
-    Ok(t)
+    Ok(text)
 }
