@@ -1,3 +1,4 @@
+#![recursion_limit = "512"]
 //! `libagent` provides the core runtime primitives for the MowisAI agent sandbox engine.
 //!
 //! This library implements the low-level runtime, the high-level API objects, and
