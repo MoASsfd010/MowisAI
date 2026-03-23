@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 use super::types::{ImplementationBlueprint, ProjectContext};
-use super::{gcloud_access_token, HTTP_TIMEOUT_SECS};
+use super::{gcloud_access_token, trace, HTTP_TIMEOUT_SECS};
 
 pub fn create_blueprint(context: &ProjectContext, project_id: &str) -> Result<ImplementationBlueprint> {
     #[cfg(not(unix))]
@@ -22,6 +22,7 @@ pub fn create_blueprint(context: &ProjectContext, project_id: &str) -> Result<Im
 
 #[cfg(unix)]
 fn create_blueprint_inner(context: &ProjectContext, project_id: &str) -> Result<ImplementationBlueprint> {
+    trace("layer2/architect: creating blueprint");
     let url = format!(
         "https://us-central1-aiplatform.googleapis.com/v1/projects/{}/locations/us-central1/publishers/google/models/gemini-2.5-pro:generateContent",
         project_id
@@ -68,6 +69,7 @@ fn create_blueprint_inner(context: &ProjectContext, project_id: &str) -> Result<
     });
 
     let token = gcloud_access_token()?;
+    let start = std::time::Instant::now();
     let resp = client
         .post(url)
         .bearer_auth(token)
@@ -75,6 +77,11 @@ fn create_blueprint_inner(context: &ProjectContext, project_id: &str) -> Result<
         .json(&body)
         .send()
         .context("architect generateContent HTTP")?;
+    trace(&format!(
+        "layer2/architect: response status={} elapsed_ms={}",
+        resp.status(),
+        start.elapsed().as_millis()
+    ));
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -83,6 +90,7 @@ fn create_blueprint_inner(context: &ProjectContext, project_id: &str) -> Result<
     }
 
     let data: Value = resp.json().context("parse architect JSON")?;
+    trace("layer2/architect: parsing blueprint JSON");
     let text = extract_text(&data)?;
     parse_blueprint_json(&text)
 }

@@ -6,7 +6,7 @@ use std::thread;
 use std::time::Duration;
 
 use super::types::{AgentResult, SandboxExecutionPlan, SandboxResult};
-use super::{gcloud_access_token, parse_ok_field, socket_roundtrip, HTTP_TIMEOUT_SECS};
+use super::{gcloud_access_token, parse_ok_field, socket_roundtrip, trace, HTTP_TIMEOUT_SECS};
 use super::worker::run_worker;
 
 const MERGE_MAX_RETRIES: usize = 2;
@@ -36,11 +36,11 @@ fn run_sandbox_inner(
     project_id: &str,
     socket_path: &str,
 ) -> Result<SandboxResult> {
-    println!(
-        "[sandbox-manager:{}] starting with {} worker(s)",
+    trace(&format!(
+        "layer4/manager: start sandbox={} workers={}",
         plan.sandbox_id,
         plan.agents.len()
-    );
+    ));
 
     let mut id_to_task = HashMap::new();
     for task in &plan.agents {
@@ -51,11 +51,19 @@ fn run_sandbox_inner(
     let mut worker_containers: HashMap<String, String> = HashMap::new();
     for task in &plan.agents {
         let cid = create_container(socket_path, &plan.sandbox_id)?;
+        trace(&format!(
+            "layer4/manager: worker container ready agent={} container={}",
+            task.agent_id, cid
+        ));
         worker_containers.insert(task.agent_id.clone(), cid);
     }
 
     // Dedicated merge container.
     let merge_container = create_container(socket_path, &plan.sandbox_id)?;
+    trace(&format!(
+        "layer4/manager: merge container ready sandbox={} container={}",
+        plan.sandbox_id, merge_container
+    ));
     init_merge_repo(socket_path, &plan.sandbox_id, &merge_container)?;
 
     let groups = if plan.dependency_order.is_empty() {
@@ -66,12 +74,12 @@ fn run_sandbox_inner(
 
     let mut agent_results = Vec::new();
     for (group_idx, group) in groups.iter().enumerate() {
-        println!(
-            "[sandbox-manager:{}] running group {} ({} workers)",
-            plan.sandbox_id,
+        trace(&format!(
+            "layer4/manager: running dependency group {}/{} ({} workers)",
             group_idx + 1,
+            groups.len(),
             group.len()
-        );
+        ));
         let (tx, rx) = mpsc::channel::<Result<AgentResult>>();
 
         for aid in group {
@@ -96,6 +104,10 @@ fn run_sandbox_inner(
 
         for recv in rx {
             let result = recv?;
+            trace(&format!(
+                "layer4/manager: worker completed agent={} success={}",
+                result.agent_id, result.success
+            ));
             if !result.diff.trim().is_empty() {
                 merge_worker_diff(
                     socket_path,
@@ -111,6 +123,12 @@ fn run_sandbox_inner(
 
     let merged_diff = read_merged_diff(socket_path, &plan.sandbox_id, &merge_container)?;
     let success = agent_results.iter().all(|r| r.success);
+    trace(&format!(
+        "layer4/manager: complete sandbox={} success={} merged_diff_bytes={}",
+        plan.sandbox_id,
+        success,
+        merged_diff.len()
+    ));
 
     Ok(SandboxResult {
         sandbox_id: plan.sandbox_id.clone(),
@@ -146,6 +164,10 @@ fn merge_worker_diff(
     merge_container: &str,
     result: &AgentResult,
 ) -> Result<()> {
+    trace(&format!(
+        "layer4/manager: merging patch agent={} sandbox={}",
+        result.agent_id, sandbox_id
+    ));
     let patch_path = format!("/workspace/.patches/{}.diff", result.agent_id);
     invoke_tool(
         socket_path,
@@ -175,6 +197,10 @@ fn merge_worker_diff(
         let _ = run_cmd(socket_path, sandbox_id, merge_container, &commit_cmd);
         return Ok(());
     }
+    trace(&format!(
+        "layer4/manager: merge conflict detected agent={} sandbox={}",
+        result.agent_id, sandbox_id
+    ));
 
     for attempt in 0..MERGE_MAX_RETRIES {
         let conflict_text = run_cmd(
@@ -204,12 +230,11 @@ fn merge_worker_diff(
             let _ = run_cmd(socket_path, sandbox_id, merge_container, &commit_cmd);
             return Ok(());
         }
-        println!(
-            "[sandbox-manager:{}] merge retry {} failed for {}",
-            sandbox_id,
+        trace(&format!(
+            "layer4/manager: merge retry {} failed for agent={}",
             attempt + 1,
             result.agent_id
-        );
+        ));
     }
 
     Err(anyhow!("failed to merge patch for {}", result.agent_id))
@@ -240,6 +265,7 @@ fn resolve_conflict_patch(
     });
 
     let token = gcloud_access_token()?;
+    let start = std::time::Instant::now();
     let resp = client
         .post(url)
         .bearer_auth(token)
@@ -247,6 +273,11 @@ fn resolve_conflict_patch(
         .json(&body)
         .send()
         .context("conflict resolution HTTP")?;
+    trace(&format!(
+        "layer4/manager: conflict resolver status={} elapsed_ms={}",
+        resp.status(),
+        start.elapsed().as_millis()
+    ));
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().unwrap_or_default();

@@ -11,7 +11,7 @@ use super::context_gatherer::gather_context;
 use super::sandbox_manager::run_sandbox;
 use super::sandbox_owner::create_sandbox_plan;
 use super::types::{SandboxResult, SandboxExecutionPlan};
-use super::{gcloud_access_token, vertex_generate_url, HTTP_TIMEOUT_SECS};
+use super::{gcloud_access_token, trace, vertex_generate_url, HTTP_TIMEOUT_SECS};
 
 pub fn run(
     prompt: &str,
@@ -39,6 +39,10 @@ fn run_inner(
     socket_path: &str,
     max_agents: usize,
 ) -> Result<String> {
+    trace("preflight: starting Vertex connectivity check");
+    verify_vertex_connectivity(project_id)?;
+    trace("preflight: Vertex connectivity check passed");
+
     println!("[layer1] Gathering project context...");
     let context = gather_context(prompt, project_id, socket_path).context("layer1 context")?;
 
@@ -58,6 +62,69 @@ fn run_inner(
     let final_text = synthesize(prompt, &context, &blueprint, &sandbox_results, project_id)?;
     println!("[result] {}", final_text);
     Ok(final_text)
+}
+
+#[cfg(unix)]
+fn verify_vertex_connectivity(project_id: &str) -> Result<()> {
+    let url = vertex_generate_url(project_id);
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .context("reqwest client preflight")?;
+    let body = json!({
+        "contents": [{
+            "role": "user",
+            "parts": [{ "text": "Reply with only: ok" }]
+        }],
+        "generationConfig": {
+            "temperature": 0.0,
+            "maxOutputTokens": 64,
+            "responseMimeType": "text/plain"
+        }
+    });
+    let token = gcloud_access_token()?;
+    let start = std::time::Instant::now();
+    let resp = client
+        .post(url)
+        .bearer_auth(token)
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .context("vertex preflight HTTP")?;
+    trace(&format!(
+        "preflight response status={} elapsed_ms={}",
+        resp.status(),
+        start.elapsed().as_millis()
+    ));
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().unwrap_or_default();
+        return Err(anyhow!("vertex preflight failed {}: {}", status, text));
+    }
+    let data: Value = resp.json().context("parse vertex preflight JSON")?;
+    let finish_reason = data
+        .pointer("/candidates/0/finishReason")
+        .and_then(|v| v.as_str())
+        .unwrap_or("UNKNOWN");
+    let text = data
+        .pointer("/candidates/0/content/parts/0/text")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_lowercase();
+    trace(&format!(
+        "preflight parsed finish_reason={} text_len={}",
+        finish_reason,
+        text.len()
+    ));
+    if text.is_empty() || !text.contains("ok") {
+        return Err(anyhow!(
+            "vertex preflight returned unexpected output (finish_reason={}); raw={}",
+            finish_reason,
+            data
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(unix)]

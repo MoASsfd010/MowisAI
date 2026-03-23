@@ -18,12 +18,21 @@ pub use planner::{Plan, PlanTask};
 pub(crate) const HTTP_TIMEOUT_SECS: u64 = 180;
 pub(crate) const MAX_TOOL_ROUNDS: usize = 64;
 
+pub(crate) fn trace(msg: &str) {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    println!("[orchestration:{}] {}", ts, msg);
+}
+
 // ── Vertex / gcloud (shared by planner, agent_runner, orchestrator) ────────
 
 #[cfg(unix)]
 pub(crate) fn gcloud_access_token() -> anyhow::Result<String> {
     use anyhow::{anyhow, Context};
     use std::process::Command;
+    trace("gcloud auth print-access-token: starting");
     let out = Command::new("gcloud")
         .args(["auth", "print-access-token"])
         .output()
@@ -39,6 +48,10 @@ pub(crate) fn gcloud_access_token() -> anyhow::Result<String> {
     if t.is_empty() {
         return Err(anyhow!("empty access token from gcloud"));
     }
+    trace(&format!(
+        "gcloud auth print-access-token: success ({} chars)",
+        t.len()
+    ));
     Ok(t)
 }
 
@@ -963,6 +976,15 @@ pub(crate) fn socket_roundtrip(
     use anyhow::{anyhow, Context};
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixStream;
+    let req_type = req
+        .get("request_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let start = std::time::Instant::now();
+    trace(&format!(
+        "socket request -> {} (path={})",
+        req_type, socket_path
+    ));
     let mut stream = UnixStream::connect(socket_path).context("UnixStream::connect")?;
     let mut line = serde_json::to_string(req).context("serialize request")?;
     line.push('\n');
@@ -976,7 +998,18 @@ pub(crate) fn socket_roundtrip(
     if trimmed.is_empty() {
         return Err(anyhow!("empty socket response"));
     }
-    serde_json::from_str(trimmed).context("parse socket JSON")
+    let parsed: serde_json::Value = serde_json::from_str(trimmed).context("parse socket JSON")?;
+    let status = parsed
+        .get("status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    trace(&format!(
+        "socket response <- {} status={} elapsed_ms={}",
+        req_type,
+        status,
+        start.elapsed().as_millis()
+    ));
+    Ok(parsed)
 }
 
 #[cfg(not(unix))]
@@ -1032,7 +1065,6 @@ pub(crate) fn invoke_tool_via_socket(
     tool_name: &str,
     input: &serde_json::Value,
 ) -> anyhow::Result<serde_json::Value> {
-    use anyhow::Context;
     use serde_json::json;
     // Allow only tools that are registered in the agentd tool registry.
     // This keeps the allow-list in sync with the real set of executable tools.
@@ -1050,6 +1082,10 @@ pub(crate) fn invoke_tool_via_socket(
         "name": tool_name,
         "input": input
     });
+    trace(&format!(
+        "invoke_tool request: tool={} sandbox={} container={}",
+        tool_name, sandbox_id, container_id
+    ));
     let resp = socket_roundtrip(socket_path, &req)?;
     if resp.get("status").and_then(|s| s.as_str()) == Some("ok") {
         Ok(resp.get("result").cloned().unwrap_or(json!({})))

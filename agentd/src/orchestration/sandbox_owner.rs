@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 use super::types::{AgentTask, ProjectContext, SandboxConfig, SandboxExecutionPlan};
-use super::{gcloud_access_token, parse_ok_field, socket_roundtrip, HTTP_TIMEOUT_SECS};
+use super::{gcloud_access_token, parse_ok_field, socket_roundtrip, trace, HTTP_TIMEOUT_SECS};
 
 #[derive(Debug, Deserialize)]
 struct PlanJson {
@@ -41,6 +41,10 @@ fn create_sandbox_plan_inner(
     project_id: &str,
     socket_path: &str,
 ) -> Result<SandboxExecutionPlan> {
+    trace(&format!(
+        "layer3/owner: create_sandbox_plan start sandbox={} agents={}",
+        config.name, config.agent_count
+    ));
     let req = json!({
         "request_type": "create_sandbox",
         "image": config.os,
@@ -48,6 +52,10 @@ fn create_sandbox_plan_inner(
     });
     let resp = socket_roundtrip(socket_path, &req)?;
     let sandbox_id = parse_ok_field(&resp, "sandbox")?;
+    trace(&format!(
+        "layer3/owner: sandbox ready name={} id={}",
+        config.name, sandbox_id
+    ));
 
     let url = format!(
         "https://us-central1-aiplatform.googleapis.com/v1/projects/{}/locations/us-central1/publishers/google/models/gemini-2.5-pro:generateContent",
@@ -97,6 +105,7 @@ fn create_sandbox_plan_inner(
     });
 
     let token = gcloud_access_token()?;
+    let start = std::time::Instant::now();
     let http_resp = client
         .post(url)
         .bearer_auth(token)
@@ -104,6 +113,12 @@ fn create_sandbox_plan_inner(
         .json(&body)
         .send()
         .context("sandbox owner generateContent HTTP")?;
+    trace(&format!(
+        "layer3/owner: planning response sandbox={} status={} elapsed_ms={}",
+        config.name,
+        http_resp.status(),
+        start.elapsed().as_millis()
+    ));
 
     if !http_resp.status().is_success() {
         let status = http_resp.status();
@@ -114,6 +129,12 @@ fn create_sandbox_plan_inner(
     let data: Value = http_resp.json().context("parse sandbox owner JSON")?;
     let text = extract_model_text(&data)?;
     let mut parsed: PlanJson = parse_plan_json(&text)?;
+    trace(&format!(
+        "layer3/owner: parsed plan sandbox={} agents={} groups={}",
+        config.name,
+        parsed.agents.len(),
+        parsed.dependency_order.len()
+    ));
 
     if parsed.agents.is_empty() {
         parsed.agents = fallback_agents(config);

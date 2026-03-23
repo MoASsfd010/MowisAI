@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use super::types::{AgentResult, AgentTask};
 use super::{
-    gcloud_access_token, invoke_tool_via_socket, gemini_tool_declarations, HTTP_TIMEOUT_SECS,
+    gemini_tool_declarations, gcloud_access_token, invoke_tool_via_socket, trace, HTTP_TIMEOUT_SECS,
     MAX_TOOL_ROUNDS,
 };
 
@@ -38,6 +38,10 @@ fn run_worker_inner(
     project_id: &str,
     socket_path: &str,
 ) -> Result<AgentResult> {
+    trace(&format!(
+        "layer5/worker: start agent={} sandbox={} container={}",
+        task.agent_id, sandbox_id, container_id
+    ));
     let url = vertex_generate_url_for_model(project_id, "gemini-2.5-flash");
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
@@ -81,8 +85,13 @@ fn run_worker_inner(
             "generationConfig": { "temperature": 0.4 }
         });
 
-        println!("[worker:{}] round {}", task.agent_id, round + 1);
+        trace(&format!(
+            "layer5/worker: round {} agent={}",
+            round + 1,
+            task.agent_id
+        ));
         let token = gcloud_access_token()?;
+        let start = std::time::Instant::now();
         let resp = client
             .post(&url)
             .bearer_auth(&token)
@@ -90,6 +99,13 @@ fn run_worker_inner(
             .json(&body)
             .send()
             .context("worker generateContent HTTP")?;
+        trace(&format!(
+            "layer5/worker: response round={} agent={} status={} elapsed_ms={}",
+            round + 1,
+            task.agent_id,
+            resp.status(),
+            start.elapsed().as_millis()
+        ));
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -165,6 +181,10 @@ fn run_worker_inner(
 
         let mut response_parts = Vec::new();
         for (name, args) in calls {
+            trace(&format!(
+                "layer5/worker: tool_call agent={} tool={}",
+                task.agent_id, name
+            ));
             if !task.tools.is_empty() && !task.tools.iter().any(|t| t == &name) {
                 let blocked = json!({
                     "error": format!("tool '{}' is not allowed for this worker", name),

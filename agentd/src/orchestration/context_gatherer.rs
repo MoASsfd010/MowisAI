@@ -4,7 +4,8 @@ use std::time::Duration;
 
 use super::types::ProjectContext;
 use super::{
-    gcloud_access_token, invoke_tool_via_socket, parse_ok_field, socket_roundtrip, HTTP_TIMEOUT_SECS,
+    gcloud_access_token, invoke_tool_via_socket, parse_ok_field, socket_roundtrip, trace,
+    HTTP_TIMEOUT_SECS,
 };
 
 const MAX_CONTEXT_ROUNDS: usize = 20;
@@ -26,8 +27,14 @@ pub fn gather_context(prompt: &str, project_id: &str, socket_path: &str) -> Resu
 
 #[cfg(unix)]
 fn gather_context_inner(prompt: &str, project_id: &str, socket_path: &str) -> Result<ProjectContext> {
+    trace("layer1/context: creating analysis sandbox");
     let sandbox_id = create_sandbox(socket_path)?;
+    trace(&format!("layer1/context: sandbox ready {}", sandbox_id));
     let container_id = create_container(socket_path, &sandbox_id)?;
+    trace(&format!(
+        "layer1/context: container ready {} in sandbox {}",
+        container_id, sandbox_id
+    ));
 
     let url = format!(
         "https://us-central1-aiplatform.googleapis.com/v1/projects/{}/locations/us-central1/publishers/google/models/gemini-2.5-pro:generateContent",
@@ -63,13 +70,19 @@ fn gather_context_inner(prompt: &str, project_id: &str, socket_path: &str) -> Re
         tool_decl("read_file", "Read a file", json!({"path": {"type":"string","description":"File path"}}), vec!["path"]),
     ];
 
-    for _ in 0..MAX_CONTEXT_ROUNDS {
+    for round in 0..MAX_CONTEXT_ROUNDS {
+        trace(&format!(
+            "layer1/context: gemini round {}/{}",
+            round + 1,
+            MAX_CONTEXT_ROUNDS
+        ));
         let body = json!({
             "contents": contents,
             "tools": [{ "functionDeclarations": tools }],
             "systemInstruction": { "parts": [{ "text": system_prompt }] },
             "generationConfig": { "temperature": 0.2 }
         });
+        let start = std::time::Instant::now();
         let token = gcloud_access_token()?;
         let resp = client
             .post(&url)
@@ -78,6 +91,12 @@ fn gather_context_inner(prompt: &str, project_id: &str, socket_path: &str) -> Re
             .json(&body)
             .send()
             .context("context gatherer HTTP")?;
+        trace(&format!(
+            "layer1/context: gemini round {} status={} elapsed_ms={}",
+            round + 1,
+            resp.status(),
+            start.elapsed().as_millis()
+        ));
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -109,12 +128,14 @@ fn gather_context_inner(prompt: &str, project_id: &str, socket_path: &str) -> Re
         }
 
         if calls.is_empty() {
+            trace("layer1/context: no function calls, parsing final JSON context");
             return parse_context_json(&final_text);
         }
 
         contents.push(json!({ "role": "model", "parts": model_parts }));
         let mut response_parts = Vec::new();
         for (name, args) in calls {
+            trace(&format!("layer1/context: tool_call name={}", name));
             let tool_result = invoke_tool_via_socket(socket_path, &sandbox_id, &container_id, &name, &args)?;
             response_parts.push(json!({
                 "functionResponse": {
