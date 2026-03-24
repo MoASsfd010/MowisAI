@@ -5,7 +5,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use super::types::{AgentResult, SandboxExecutionPlan, SandboxResult};
+use super::types::{AgentResult, SandboxExecutionPlan, SandboxResult, SandboxWarmState};
 use super::{
     gcloud_access_token, parse_ok_field, socket_roundtrip, trace, vertex_generation_config,
     HTTP_TIMEOUT_SECS,
@@ -18,10 +18,11 @@ pub fn run_sandbox(
     plan: &SandboxExecutionPlan,
     project_id: &str,
     socket_path: &str,
+    warm: Option<&mut SandboxWarmState>,
 ) -> Result<SandboxResult> {
     #[cfg(not(unix))]
     {
-        let _ = (plan, project_id, socket_path);
+        let _ = (plan, project_id, socket_path, warm);
         return Err(anyhow!(
             "sandbox manager requires Unix (agentd uses Unix domain sockets)"
         ));
@@ -29,7 +30,7 @@ pub fn run_sandbox(
 
     #[cfg(unix)]
     {
-        run_sandbox_inner(plan, project_id, socket_path)
+        run_sandbox_inner(plan, project_id, socket_path, warm)
     }
 }
 
@@ -38,6 +39,7 @@ fn run_sandbox_inner(
     plan: &SandboxExecutionPlan,
     project_id: &str,
     socket_path: &str,
+    warm: Option<&mut SandboxWarmState>,
 ) -> Result<SandboxResult> {
     trace(&format!(
         "layer4/manager: start sandbox={} workers={}",
@@ -50,24 +52,65 @@ fn run_sandbox_inner(
         id_to_task.insert(task.agent_id.clone(), task.clone());
     }
 
-    // Pre-create worker containers.
+    // Pre-create or reuse worker containers (interactive: same `agent_id` → same container).
     let mut worker_containers: HashMap<String, String> = HashMap::new();
     for task in &plan.agents {
-        let cid = create_container(socket_path, &plan.sandbox_id)?;
-        trace(&format!(
-            "layer4/manager: worker container ready agent={} container={}",
-            task.agent_id, cid
-        ));
+        let cid = if let Some(wstate) = warm {
+            if let Some(existing) = wstate.worker_containers.get(&task.agent_id) {
+                trace(&format!(
+                    "layer4/manager: reuse worker container agent={} container={}",
+                    task.agent_id, existing
+                ));
+                existing.clone()
+            } else {
+                let c = create_container(socket_path, &plan.sandbox_id)?;
+                trace(&format!(
+                    "layer4/manager: worker container ready agent={} container={}",
+                    task.agent_id, c
+                ));
+                wstate
+                    .worker_containers
+                    .insert(task.agent_id.clone(), c.clone());
+                c
+            }
+        } else {
+            let c = create_container(socket_path, &plan.sandbox_id)?;
+            trace(&format!(
+                "layer4/manager: worker container ready agent={} container={}",
+                task.agent_id, c
+            ));
+            c
+        };
         worker_containers.insert(task.agent_id.clone(), cid);
     }
 
-    // Dedicated merge container.
-    let merge_container = create_container(socket_path, &plan.sandbox_id)?;
-    trace(&format!(
-        "layer4/manager: merge container ready sandbox={} container={}",
-        plan.sandbox_id, merge_container
-    ));
-    init_merge_repo(socket_path, &plan.sandbox_id, &merge_container)?;
+    // Dedicated merge container (reused in interactive mode so `/workspace` git history continues).
+    let merge_container = if let Some(wstate) = warm {
+        if let Some(ref mid) = wstate.merge_container_id {
+            trace(&format!(
+                "layer4/manager: reuse merge container sandbox={} container={}",
+                plan.sandbox_id, mid
+            ));
+            mid.clone()
+        } else {
+            let c = create_container(socket_path, &plan.sandbox_id)?;
+            trace(&format!(
+                "layer4/manager: merge container ready sandbox={} container={}",
+                plan.sandbox_id, c
+            ));
+            init_merge_repo(socket_path, &plan.sandbox_id, &c)?;
+            wstate.merge_container_id = Some(c.clone());
+            c
+        }
+    } else {
+        let c = create_container(socket_path, &plan.sandbox_id)?;
+        trace(&format!(
+            "layer4/manager: merge container ready sandbox={} container={}",
+            plan.sandbox_id, c
+        ));
+        init_merge_repo(socket_path, &plan.sandbox_id, &c)?;
+        c
+    };
 
     let groups = if plan.dependency_order.is_empty() {
         vec![plan.agents.iter().map(|a| a.agent_id.clone()).collect()]

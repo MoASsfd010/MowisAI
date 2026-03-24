@@ -22,10 +22,11 @@ pub fn create_sandbox_plan(
     config: &SandboxConfig,
     project_id: &str,
     socket_path: &str,
+    reuse_sandbox_id: Option<&str>,
 ) -> Result<SandboxExecutionPlan> {
     #[cfg(not(unix))]
     {
-        let _ = (context, config, project_id, socket_path);
+        let _ = (context, config, project_id, socket_path, reuse_sandbox_id);
         return Err(anyhow!(
             "sandbox owner requires Unix (agentd uses Unix domain sockets)"
         ));
@@ -33,7 +34,13 @@ pub fn create_sandbox_plan(
 
     #[cfg(unix)]
     {
-        create_sandbox_plan_inner(context, config, project_id, socket_path)
+        create_sandbox_plan_inner(
+            context,
+            config,
+            project_id,
+            socket_path,
+            reuse_sandbox_id,
+        )
     }
 }
 
@@ -43,22 +50,32 @@ fn create_sandbox_plan_inner(
     config: &SandboxConfig,
     project_id: &str,
     socket_path: &str,
+    reuse_sandbox_id: Option<&str>,
 ) -> Result<SandboxExecutionPlan> {
     trace(&format!(
         "layer3/owner: create_sandbox_plan start sandbox={} agents={}",
         config.name, config.agent_count
     ));
-    let req = json!({
-        "request_type": "create_sandbox",
-        "image": config.os,
-        "packages": config.packages
-    });
-    let resp = socket_roundtrip(socket_path, &req)?;
-    let sandbox_id = parse_ok_field(&resp, "sandbox")?;
-    trace(&format!(
-        "layer3/owner: sandbox ready name={} id={}",
-        config.name, sandbox_id
-    ));
+    let sandbox_id = if let Some(existing) = reuse_sandbox_id {
+        trace(&format!(
+            "layer3/owner: reusing sandbox id={} for team={} (interactive session)",
+            existing, config.name
+        ));
+        existing.to_string()
+    } else {
+        let req = json!({
+            "request_type": "create_sandbox",
+            "image": config.os,
+            "packages": config.packages
+        });
+        let resp = socket_roundtrip(socket_path, &req)?;
+        let id = parse_ok_field(&resp, "sandbox")?;
+        trace(&format!(
+            "layer3/owner: sandbox ready name={} id={}",
+            config.name, id
+        ));
+        id
+    };
 
     let url = format!(
         "https://us-central1-aiplatform.googleapis.com/v1/projects/{}/locations/us-central1/publishers/google/models/gemini-2.5-pro:generateContent",
@@ -75,6 +92,7 @@ fn create_sandbox_plan_inner(
          {{\"agents\":[{{\"agent_id\":\"...\",\"task\":\"...\",\"files\":[],\"tools\":[],\"context\":\"...\"}}],\"dependency_order\":[[\"agent-id-1\"]]}}\n\n\
          Constraints:\n\
          - exactly {} agents\n\
+         - use stable agent_id values when possible (e.g. `{}-worker-01`, `{}-worker-02`) so interactive sessions can reuse the same containers across turns\n\
          - each agent tools must be subset of sandbox tools: {:?}\n\
          - files should be concrete relative paths\n\
          - task scope must align with deliverable: {}\n\n\
@@ -88,6 +106,8 @@ fn create_sandbox_plan_inner(
          task_summary: {}",
         config.name,
         config.agent_count,
+        config.name,
+        config.name,
         config.tools,
         config.deliverable,
         context.project_name,
@@ -155,6 +175,7 @@ fn create_sandbox_plan_inner(
     }
 
     Ok(SandboxExecutionPlan {
+        sandbox_team: config.name.clone(),
         sandbox_id,
         agents: parsed.agents,
         dependency_order: parsed.dependency_order,

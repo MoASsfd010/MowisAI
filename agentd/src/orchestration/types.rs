@@ -1,5 +1,6 @@
-use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectContext {
     pub project_name: String,
@@ -39,6 +40,9 @@ pub struct AgentTask {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SandboxExecutionPlan {
+    /// Blueprint sandbox / team name (used to reuse the same agentd sandbox across REPL turns).
+    #[serde(default)]
+    pub sandbox_team: String,
     pub sandbox_id: String,
     pub agents: Vec<AgentTask>,
     pub dependency_order: Vec<Vec<String>>,
@@ -59,4 +63,12 @@ pub struct SandboxResult {
     pub success: bool,
     pub agent_results: Vec<AgentResult>,
     pub merged_diff: String,
+}
+
+/// Persistent handles for interactive / long-lived runs: same `sandbox_id`, reuse containers when
+/// `agent_id` matches a previous turn (merge container is always reused once created).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SandboxWarmState {
+    pub worker_containers: HashMap<String, String>,
+    pub merge_container_id: Option<String>,
 }

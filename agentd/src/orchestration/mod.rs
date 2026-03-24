@@ -3,9 +3,11 @@
 mod agent_runner;
 pub mod architect;
 pub mod context_gatherer;
+mod coordinator;
 mod executor;
 pub mod sandbox_manager;
 pub mod sandbox_owner;
+pub mod session_store;
 pub mod types;
 pub mod worker;
 mod planner;
