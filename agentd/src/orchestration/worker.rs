@@ -42,10 +42,8 @@ fn run_worker_inner(
         "layer5/worker: start agent={} sandbox={} container={}",
         task.agent_id, sandbox_id, container_id
     ));
-    let primary_model = "gemini-2.5-flash";
-    let fallback_model = "gemini-2.5-pro";
-    let mut model = primary_model;
-    let mut url = vertex_generate_url_for_model(project_id, model);
+    let model = "gemini-2.5-pro";
+    let url = vertex_generate_url_for_model(project_id, model);
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
         .build()
@@ -83,7 +81,7 @@ fn run_worker_inner(
     for round in 0..MAX_TOOL_ROUNDS {
         let body = json!({
             "contents": contents,
-            "tools": [{ "functionDeclarations": tools }],
+            "tools": [{ "function_declarations": tools }],
             "systemInstruction": { "parts": [{ "text": system_prompt }] },
             "generationConfig": { "temperature": 0.4 }
         });
@@ -122,15 +120,6 @@ fn run_worker_inner(
                 status,
                 text
             ));
-            if model == primary_model {
-                model = fallback_model;
-                url = vertex_generate_url_for_model(project_id, model);
-                trace(&format!(
-                    "layer5/worker: switching model for agent={} -> {}",
-                    task.agent_id, model
-                ));
-                continue;
-            }
             return Ok(AgentResult {
                 agent_id: task.agent_id.clone(),
                 success: false,

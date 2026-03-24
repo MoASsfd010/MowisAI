@@ -78,7 +78,7 @@ fn gather_context_inner(prompt: &str, project_id: &str, socket_path: &str) -> Re
         ));
         let body = json!({
             "contents": contents,
-            "tools": [{ "functionDeclarations": tools }],
+            "tools": [{ "function_declarations": tools }],
             "systemInstruction": { "parts": [{ "text": system_prompt }] },
             "generationConfig": { "temperature": 0.2 }
         });
