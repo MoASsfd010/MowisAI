@@ -42,7 +42,10 @@ fn run_worker_inner(
         "layer5/worker: start agent={} sandbox={} container={}",
         task.agent_id, sandbox_id, container_id
     ));
-    let url = vertex_generate_url_for_model(project_id, "gemini-2.5-flash");
+    let primary_model = "gemini-2.5-flash";
+    let fallback_model = "gemini-2.5-pro";
+    let mut model = primary_model;
+    let mut url = vertex_generate_url_for_model(project_id, model);
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
         .build()
@@ -100,9 +103,10 @@ fn run_worker_inner(
             .send()
             .context("worker generateContent HTTP")?;
         trace(&format!(
-            "layer5/worker: response round={} agent={} status={} elapsed_ms={}",
+            "layer5/worker: response round={} agent={} model={} status={} elapsed_ms={}",
             round + 1,
             task.agent_id,
+            model,
             resp.status(),
             start.elapsed().as_millis()
         ));
@@ -110,10 +114,27 @@ fn run_worker_inner(
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().unwrap_or_default();
+            trace(&format!(
+                "layer5/worker: vertex error round={} agent={} model={} status={} body={}",
+                round + 1,
+                task.agent_id,
+                model,
+                status,
+                text
+            ));
+            if model == primary_model {
+                model = fallback_model;
+                url = vertex_generate_url_for_model(project_id, model);
+                trace(&format!(
+                    "layer5/worker: switching model for agent={} -> {}",
+                    task.agent_id, model
+                ));
+                continue;
+            }
             return Ok(AgentResult {
                 agent_id: task.agent_id.clone(),
                 success: false,
-                summary: format!("Vertex error {}: {}", status, text),
+                summary: format!("Vertex error (model {}) {}: {}", model, status, text),
                 diff: String::new(),
                 files_changed: Vec::new(),
             });
