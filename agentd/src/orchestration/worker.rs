@@ -74,17 +74,32 @@ fn run_worker_inner(
         "parts": [{ "text": task.task }]
     })];
     let tools = filtered_tool_declarations(&task.tools);
+    trace(&format!(
+        "layer5/worker: tool declarations agent={} requested_tools={} resolved_declarations={}",
+        task.agent_id,
+        task.tools.len(),
+        tools.len()
+    ));
 
     let mut completion = String::new();
     let mut touched_files: HashSet<String> = HashSet::new();
 
     for round in 0..MAX_TOOL_ROUNDS {
-        let body = json!({
-            "contents": contents,
-            "tools": [{ "function_declarations": tools }],
-            "systemInstruction": { "parts": [{ "text": system_prompt }] },
-            "generationConfig": { "temperature": 0.4 }
-        });
+        let body = if tools.is_empty() {
+            // Vertex rejects an empty tool wrapper; send no tools key instead.
+            json!({
+                "contents": contents,
+                "systemInstruction": { "parts": [{ "text": system_prompt }] },
+                "generationConfig": { "temperature": 0.4 }
+            })
+        } else {
+            json!({
+                "contents": contents,
+                "tools": [{ "function_declarations": tools }],
+                "systemInstruction": { "parts": [{ "text": system_prompt }] },
+                "generationConfig": { "temperature": 0.4 }
+            })
+        };
 
         trace(&format!(
             "layer5/worker: round {} agent={}",
@@ -254,7 +269,7 @@ fn filtered_tool_declarations(allowed_tools: &[String]) -> Vec<Value> {
     if allowed_tools.is_empty() {
         return all_arr;
     }
-    all_arr
+    let filtered: Vec<Value> = all_arr
         .into_iter()
         .filter(|d| {
             d.get("name")
@@ -262,7 +277,17 @@ fn filtered_tool_declarations(allowed_tools: &[String]) -> Vec<Value> {
                 .map(|name| allowed_tools.iter().any(|t| t == name))
                 .unwrap_or(false)
         })
-        .collect()
+        .collect();
+    // If planner/tool names are mismatched, do not send an empty tools wrapper.
+    // Fall back to full declarations so workers remain functional.
+    if filtered.is_empty() {
+        gemini_tool_declarations()
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+    } else {
+        filtered
+    }
 }
 
 fn collect_diff(socket_path: &str, sandbox_id: &str, container_id: &str) -> String {
