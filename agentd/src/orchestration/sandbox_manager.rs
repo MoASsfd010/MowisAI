@@ -6,7 +6,10 @@ use std::thread;
 use std::time::Duration;
 
 use super::types::{AgentResult, SandboxExecutionPlan, SandboxResult};
-use super::{gcloud_access_token, parse_ok_field, socket_roundtrip, trace, HTTP_TIMEOUT_SECS};
+use super::{
+    gcloud_access_token, parse_ok_field, socket_roundtrip, trace, vertex_generation_config,
+    HTTP_TIMEOUT_SECS,
+};
 use super::worker::run_worker;
 
 const MERGE_MAX_RETRIES: usize = 2;
@@ -261,7 +264,7 @@ fn resolve_conflict_patch(
     );
     let body = json!({
         "contents": [{ "role": "user", "parts": [{ "text": prompt }] }],
-        "generationConfig": { "temperature": 0.2 }
+        "generationConfig": vertex_generation_config(0.2)
     });
 
     let token = gcloud_access_token()?;
@@ -297,7 +300,24 @@ fn resolve_conflict_patch(
 }
 
 fn read_merged_diff(socket_path: &str, sandbox_id: &str, merge_container: &str) -> Result<String> {
-    run_cmd(socket_path, sandbox_id, merge_container, "cd /workspace && git diff")
+    // After `git commit`, the working tree matches `HEAD`, so plain `git diff` is empty.
+    // Return patches for commits actually recorded in the merge repo.
+    if run_cmd(
+        socket_path,
+        sandbox_id,
+        merge_container,
+        "cd /workspace && git rev-parse --verify HEAD",
+    )
+    .is_err()
+    {
+        return Ok(String::new());
+    }
+    run_cmd(
+        socket_path,
+        sandbox_id,
+        merge_container,
+        "cd /workspace && git log --no-decorate -n 64 -p",
+    )
 }
 
 fn run_cmd(

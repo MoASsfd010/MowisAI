@@ -4,7 +4,10 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 use super::types::{AgentTask, ProjectContext, SandboxConfig, SandboxExecutionPlan};
-use super::{gcloud_access_token, parse_ok_field, socket_roundtrip, trace, HTTP_TIMEOUT_SECS};
+use super::{
+    gcloud_access_token, parse_ok_field, socket_roundtrip, trace, vertex_generation_config_json,
+    HTTP_TIMEOUT_SECS,
+};
 
 #[derive(Debug, Deserialize)]
 struct PlanJson {
@@ -98,10 +101,7 @@ fn create_sandbox_plan_inner(
 
     let body = json!({
         "contents": [{ "role": "user", "parts": [{ "text": prompt }] }],
-        "generationConfig": {
-            "temperature": 0.3,
-            "responseMimeType": "application/json"
-        }
+        "generationConfig": vertex_generation_config_json(0.3)
     });
 
     let token = gcloud_access_token()?;

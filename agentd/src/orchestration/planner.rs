@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::Duration;
 
-use super::{gcloud_access_token, vertex_generate_url, HTTP_TIMEOUT_SECS};
+use super::{
+    gcloud_access_token, vertex_generate_url, vertex_generation_config_json, HTTP_TIMEOUT_SECS,
+};
 
 /// One unit of work for the executor.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,10 +79,7 @@ User goal:
             "role": "user",
             "parts": [{ "text": instruction }]
         }],
-        "generationConfig": {
-            "temperature": 0.35,
-            "responseMimeType": "application/json"
-        }
+        "generationConfig": vertex_generation_config_json(0.35)
     });
 
     let token = gcloud_access_token()?;

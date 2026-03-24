@@ -15,8 +15,58 @@ mod sandbox_profiles;
 pub use agent_runner::AgentOutput;
 pub use planner::{Plan, PlanTask};
 
-pub(crate) const HTTP_TIMEOUT_SECS: u64 = 180;
-pub(crate) const MAX_TOOL_ROUNDS: usize = 64;
+/// Long-running generateContent calls (large outputs / tool loops).
+pub(crate) const HTTP_TIMEOUT_SECS: u64 = 900;
+
+/// Safety cap for tool-calling loops only (each round is one API call). Raise if needed.
+pub(crate) const MAX_TOOL_ROUNDS: usize = 256;
+
+/// Context-gatherer tool rounds (Layer 1).
+pub(crate) const MAX_CONTEXT_GATHER_ROUNDS: usize = 128;
+
+/// `maxOutputTokens` for Vertex `generateContent`. The API still applies per-model server-side limits.
+pub(crate) const VERTEX_MAX_OUTPUT_TOKENS: u32 = 65_536;
+
+/// Gemini 2.5 “thinking” budget (tokens). Omit by setting to 0 if your endpoint rejects the field.
+pub(crate) const VERTEX_THINKING_BUDGET_TOKENS: u32 = 24_576;
+
+use serde_json::{json, Value};
+
+/// Standard generation block for text / tools (no JSON mode).
+pub(crate) fn vertex_generation_config(temperature: f64) -> Value {
+    if VERTEX_THINKING_BUDGET_TOKENS == 0 {
+        return json!({
+            "temperature": temperature,
+            "maxOutputTokens": VERTEX_MAX_OUTPUT_TOKENS
+        });
+    }
+    json!({
+        "temperature": temperature,
+        "maxOutputTokens": VERTEX_MAX_OUTPUT_TOKENS,
+        "thinkingConfig": {
+            "thinkingBudget": VERTEX_THINKING_BUDGET_TOKENS
+        }
+    })
+}
+
+/// Like [`vertex_generation_config`] but requests JSON-only responses (architect / planner).
+pub(crate) fn vertex_generation_config_json(temperature: f64) -> Value {
+    if VERTEX_THINKING_BUDGET_TOKENS == 0 {
+        return json!({
+            "temperature": temperature,
+            "maxOutputTokens": VERTEX_MAX_OUTPUT_TOKENS,
+            "responseMimeType": "application/json"
+        });
+    }
+    json!({
+        "temperature": temperature,
+        "maxOutputTokens": VERTEX_MAX_OUTPUT_TOKENS,
+        "responseMimeType": "application/json",
+        "thinkingConfig": {
+            "thinkingBudget": VERTEX_THINKING_BUDGET_TOKENS
+        }
+    })
+}
 
 pub(crate) fn trace(msg: &str) {
     let ts = std::time::SystemTime::now()
@@ -49,7 +99,7 @@ pub(crate) fn gcloud_access_token() -> anyhow::Result<String> {
         return Err(anyhow!("empty access token from gcloud"));
     }
     trace(&format!(
-        "gcloud auth print-access-token: success ({} chars)",
+        "gcloud auth print-access-token: OAuth access token length={} chars (not Gemini output)",
         t.len()
     ));
     Ok(t)

@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use super::types::{AgentResult, AgentTask};
 use super::{
-    gemini_tool_declarations, gcloud_access_token, invoke_tool_via_socket, trace, HTTP_TIMEOUT_SECS,
-    MAX_TOOL_ROUNDS,
+    gemini_tool_declarations, gcloud_access_token, invoke_tool_via_socket, trace,
+    vertex_generation_config, HTTP_TIMEOUT_SECS, MAX_TOOL_ROUNDS,
 };
 
 pub fn run_worker(
@@ -90,14 +90,14 @@ fn run_worker_inner(
             json!({
                 "contents": contents,
                 "systemInstruction": { "parts": [{ "text": system_prompt }] },
-                "generationConfig": { "temperature": 0.4 }
+                "generationConfig": vertex_generation_config(0.4)
             })
         } else {
             json!({
                 "contents": contents,
                 "tools": [{ "function_declarations": tools }],
                 "systemInstruction": { "parts": [{ "text": system_prompt }] },
-                "generationConfig": { "temperature": 0.4 }
+                "generationConfig": vertex_generation_config(0.4)
             })
         };
 

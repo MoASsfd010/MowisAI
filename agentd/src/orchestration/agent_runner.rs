@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use super::{
     gemini_tool_declarations, gcloud_access_token, invoke_tool_via_socket, vertex_generate_url,
-    HTTP_TIMEOUT_SECS, MAX_TOOL_ROUNDS,
+    vertex_generation_config, HTTP_TIMEOUT_SECS, MAX_TOOL_ROUNDS,
 };
 
 #[derive(Debug, Clone)]
@@ -112,7 +112,7 @@ fn run_agent_inner(
     })];
 
     let tools = json!([{
-        "functionDeclarations": gemini_tool_declarations()
+        "function_declarations": gemini_tool_declarations()
     }]);
 
     let mut files_created: Vec<String> = Vec::new();
@@ -123,9 +123,7 @@ fn run_agent_inner(
             "contents": contents,
             "tools": tools,
             "systemInstruction": system_instruction,
-            "generationConfig": {
-                "temperature": 0.5
-            }
+            "generationConfig": vertex_generation_config(0.5)
         });
 
         println!(

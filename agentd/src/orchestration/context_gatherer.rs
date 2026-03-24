@@ -5,10 +5,8 @@ use std::time::Duration;
 use super::types::ProjectContext;
 use super::{
     gcloud_access_token, invoke_tool_via_socket, parse_ok_field, socket_roundtrip, trace,
-    HTTP_TIMEOUT_SECS,
+    vertex_generation_config, HTTP_TIMEOUT_SECS, MAX_CONTEXT_GATHER_ROUNDS,
 };
-
-const MAX_CONTEXT_ROUNDS: usize = 20;
 
 pub fn gather_context(prompt: &str, project_id: &str, socket_path: &str) -> Result<ProjectContext> {
     #[cfg(not(unix))]
@@ -70,17 +68,17 @@ fn gather_context_inner(prompt: &str, project_id: &str, socket_path: &str) -> Re
         tool_decl("read_file", "Read a file", json!({"path": {"type":"string","description":"File path"}}), vec!["path"]),
     ];
 
-    for round in 0..MAX_CONTEXT_ROUNDS {
+    for round in 0..MAX_CONTEXT_GATHER_ROUNDS {
         trace(&format!(
             "layer1/context: gemini round {}/{}",
             round + 1,
-            MAX_CONTEXT_ROUNDS
+            MAX_CONTEXT_GATHER_ROUNDS
         ));
         let body = json!({
             "contents": contents,
             "tools": [{ "function_declarations": tools }],
             "systemInstruction": { "parts": [{ "text": system_prompt }] },
-            "generationConfig": { "temperature": 0.2 }
+            "generationConfig": vertex_generation_config(0.2)
         });
         let start = std::time::Instant::now();
         let token = gcloud_access_token()?;
@@ -147,7 +145,7 @@ fn gather_context_inner(prompt: &str, project_id: &str, socket_path: &str) -> Re
         contents.push(json!({ "role": "user", "parts": response_parts }));
     }
 
-    Err(anyhow!("context gatherer exceeded tool-loop rounds"))
+    Err(anyhow!("context gatherer exceeded tool-loop rounds ({})", MAX_CONTEXT_GATHER_ROUNDS))
 }
 
 fn create_sandbox(socket_path: &str) -> Result<String> {

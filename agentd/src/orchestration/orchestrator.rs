@@ -11,7 +11,10 @@ use super::context_gatherer::gather_context;
 use super::sandbox_manager::run_sandbox;
 use super::sandbox_owner::create_sandbox_plan;
 use super::types::{SandboxResult, SandboxExecutionPlan};
-use super::{gcloud_access_token, trace, vertex_generate_url, HTTP_TIMEOUT_SECS};
+use super::{
+    gcloud_access_token, trace, vertex_generate_url, vertex_generation_config, HTTP_TIMEOUT_SECS,
+    VERTEX_MAX_OUTPUT_TOKENS,
+};
 
 pub fn run(
     prompt: &str,
@@ -78,7 +81,7 @@ fn verify_vertex_connectivity(project_id: &str) -> Result<()> {
         }],
         "generationConfig": {
             "temperature": 0.0,
-            "maxOutputTokens": 64,
+            "maxOutputTokens": VERTEX_MAX_OUTPUT_TOKENS.min(1024),
             "responseMimeType": "text/plain"
         }
     });
@@ -228,7 +231,7 @@ fn synthesize(
                 )
             }]
         }],
-        "generationConfig": { "temperature": 0.35 }
+        "generationConfig": vertex_generation_config(0.35)
     });
 
     let token = gcloud_access_token()?;

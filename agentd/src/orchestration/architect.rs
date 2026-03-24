@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 use super::types::{ImplementationBlueprint, ProjectContext};
-use super::{gcloud_access_token, trace, HTTP_TIMEOUT_SECS};
+use super::{gcloud_access_token, trace, vertex_generation_config_json, HTTP_TIMEOUT_SECS};
 
 pub fn create_blueprint(context: &ProjectContext, project_id: &str) -> Result<ImplementationBlueprint> {
     #[cfg(not(unix))]
@@ -62,10 +62,7 @@ fn create_blueprint_inner(context: &ProjectContext, project_id: &str) -> Result<
 
     let body = json!({
         "contents": [{ "role": "user", "parts": [{ "text": prompt }] }],
-        "generationConfig": {
-            "temperature": 0.25,
-            "responseMimeType": "application/json"
-        }
+        "generationConfig": vertex_generation_config_json(0.25)
     });
 
     let token = gcloud_access_token()?;
