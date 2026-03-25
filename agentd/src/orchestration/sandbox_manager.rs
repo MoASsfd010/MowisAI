@@ -18,7 +18,7 @@ pub fn run_sandbox(
     plan: &SandboxExecutionPlan,
     project_id: &str,
     socket_path: &str,
-    warm: Option<&mut SandboxWarmState>,
+    mut warm: Option<&mut SandboxWarmState>,
 ) -> Result<SandboxResult> {
     #[cfg(not(unix))]
     {
@@ -39,7 +39,7 @@ fn run_sandbox_inner(
     plan: &SandboxExecutionPlan,
     project_id: &str,
     socket_path: &str,
-    warm: Option<&mut SandboxWarmState>,
+    mut warm: Option<&mut SandboxWarmState>,
 ) -> Result<SandboxResult> {
     trace(&format!(
         "layer4/manager: start sandbox={} workers={}",
