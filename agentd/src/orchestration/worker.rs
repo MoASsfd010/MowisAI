@@ -74,6 +74,12 @@ fn run_worker_inner(
         "parts": [{ "text": task.task }]
     })];
     let tools = filtered_tool_declarations(&task.tools);
+    // Runtime tool gating must match the tool declarations we sent to Gemini.
+    // Otherwise Gemini may call a tool we "blocked" locally (causing infinite loops).
+    let allowed_tool_names: HashSet<String> = tools
+        .iter()
+        .filter_map(|d| d.get("name").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        .collect();
     trace(&format!(
         "layer5/worker: tool declarations agent={} requested_tools={} resolved_declarations={}",
         task.agent_id,
@@ -250,7 +256,7 @@ fn run_worker_inner(
                 );
             }
 
-            if !task.tools.is_empty() && !task.tools.iter().any(|t| t == &name) {
+            if !allowed_tool_names.is_empty() && !allowed_tool_names.contains(&name) {
                 let blocked = json!({
                     "error": format!("tool '{}' is not allowed for this worker", name),
                     "success": false
