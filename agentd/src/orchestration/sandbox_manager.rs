@@ -55,7 +55,7 @@ fn run_sandbox_inner(
     // Pre-create or reuse worker containers (interactive: same `agent_id` → same container).
     let mut worker_containers: HashMap<String, String> = HashMap::new();
     for task in &plan.agents {
-        let cid = if let Some(wstate) = warm {
+        let cid = if let Some(wstate) = warm.as_deref_mut() {
             if let Some(existing) = wstate.worker_containers.get(&task.agent_id) {
                 trace(&format!(
                     "layer4/manager: reuse worker container agent={} container={}",
@@ -85,7 +85,7 @@ fn run_sandbox_inner(
     }
 
     // Dedicated merge container (reused in interactive mode so `/workspace` git history continues).
-    let merge_container = if let Some(wstate) = warm {
+    let merge_container = if let Some(wstate) = warm.as_deref_mut() {
         if let Some(ref mid) = wstate.merge_container_id {
             trace(&format!(
                 "layer4/manager: reuse merge container sandbox={} container={}",
