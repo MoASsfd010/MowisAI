@@ -73,6 +73,9 @@ enum Commands {
         socket: String,
         #[arg(long, default_value_t = 10)]
         max_agents: usize,
+        /// Verbose logging (HTTP/socket payloads, round timings, etc.)
+        #[arg(long, default_value_t = false)]
+        debug: bool,
     },
     /// Same as orchestrate, but stay in-process: enter follow-ups without exiting (reuses sandboxes by team name)
     OrchestrateInteractive {
@@ -88,6 +91,9 @@ enum Commands {
         /// Load `--session-file` and continue the REPL (skips the initial task prompt).
         #[arg(long, default_value_t = false)]
         resume: bool,
+        /// Verbose logging (HTTP/socket payloads, round timings, etc.)
+        #[arg(long, default_value_t = false)]
+        debug: bool,
     },
 }
 
@@ -145,7 +151,9 @@ fn main() -> anyhow::Result<()> {
             project,
             socket,
             max_agents,
+            debug,
         } => {
+            libagent::orchestration::set_debug(debug);
             libagent::orchestration::orchestrator::run(
                 &prompt,
                 &project,
@@ -159,7 +167,9 @@ fn main() -> anyhow::Result<()> {
             max_agents,
             session_file,
             resume,
+            debug,
         } => {
+            libagent::orchestration::set_debug(debug);
             #[cfg(not(unix))]
             {
                 return Err(anyhow::anyhow!(

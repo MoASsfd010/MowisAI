@@ -6,7 +6,7 @@ use std::time::Duration;
 use super::types::{AgentResult, AgentTask};
 use super::{
     gemini_tool_declarations, gcloud_access_token, invoke_tool_via_socket, trace,
-    vertex_generation_config, HTTP_TIMEOUT_SECS, MAX_TOOL_ROUNDS,
+    vertex_generation_config, debug_enabled, HTTP_TIMEOUT_SECS, MAX_TOOL_ROUNDS,
 };
 
 pub fn run_worker(
@@ -101,6 +101,14 @@ fn run_worker_inner(
             })
         };
 
+        if !debug_enabled() {
+            // High-signal "thinking" indicator without dumping internal prompts.
+            println!(
+                "[agent:{}] thinking… (round {})",
+                task.agent_id,
+                round + 1
+            );
+        }
         trace(&format!(
             "layer5/worker: round {} agent={}",
             round + 1,
@@ -171,6 +179,13 @@ fn run_worker_inner(
             } else if let Some(text) = p.get("text").and_then(|v| v.as_str()) {
                 if !text.trim().is_empty() {
                     completion = text.to_string();
+                    if debug_enabled() {
+                        println!(
+                            "[agent:{}] model_text: {}",
+                            task.agent_id,
+                            text.trim()
+                        );
+                    }
                 }
                 model_parts.push(p.clone());
             } else {
@@ -206,15 +221,51 @@ fn run_worker_inner(
 
         let mut response_parts = Vec::new();
         for (name, args) in calls {
-            trace(&format!(
-                "layer5/worker: tool_call agent={} tool={}",
-                task.agent_id, name
-            ));
+            // Normal CLI: show tool call + important args.
+            if !debug_enabled() {
+                if let Some(p) = args.get("path").and_then(|v| v.as_str()) {
+                    println!("[agent:{}] tool_call {} path={}", task.agent_id, name, p);
+                } else if let Some(p) = args.get("dst").and_then(|v| v.as_str()) {
+                    println!("[agent:{}] tool_call {} dst={}", task.agent_id, name, p);
+                } else if let Some(p) = args.get("to").and_then(|v| v.as_str()) {
+                    println!("[agent:{}] tool_call {} to={}", task.agent_id, name, p);
+                } else if let Some(p) = args.get("from").and_then(|v| v.as_str()) {
+                    println!(
+                        "[agent:{}] tool_call {} from={}",
+                        task.agent_id, name, p
+                    );
+                } else if let Some(cmd) = args.get("cmd").and_then(|v| v.as_str()) {
+                    println!("[agent:{}] tool_call {} cmd={}", task.agent_id, name, cmd);
+                } else {
+                    println!("[agent:{}] tool_call {}", task.agent_id, name);
+                }
+            } else {
+                trace(&format!(
+                    "layer5/worker: tool_call agent={} tool={}",
+                    task.agent_id, name
+                ));
+                println!(
+                    "[agent:{}] tool_args {} = {}",
+                    task.agent_id, name, args
+                );
+            }
+
             if !task.tools.is_empty() && !task.tools.iter().any(|t| t == &name) {
                 let blocked = json!({
                     "error": format!("tool '{}' is not allowed for this worker", name),
                     "success": false
                 });
+                if debug_enabled() {
+                    println!(
+                        "[agent:{}] tool_result {} = {}",
+                        task.agent_id, name, blocked
+                    );
+                } else {
+                    println!(
+                        "[agent:{}] tool_result {} success=false (blocked)",
+                        task.agent_id, name
+                    );
+                }
                 response_parts.push(json!({
                     "functionResponse": { "name": name, "response": blocked }
                 }));
@@ -233,6 +284,30 @@ fn run_worker_inner(
 
             let tool_result =
                 invoke_tool_via_socket(socket_path, sandbox_id, container_id, &name, &args)?;
+
+            if !debug_enabled() {
+                let success = tool_result
+                    .get("success")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                if let Some(p) = tool_result.get("path").and_then(|v| v.as_str()) {
+                    println!(
+                        "[agent:{}] tool_result {} path={} success={}",
+                        task.agent_id, name, p, success
+                    );
+                } else {
+                    println!(
+                        "[agent:{}] tool_result {} success={}",
+                        task.agent_id, name, success
+                    );
+                }
+            } else {
+                println!(
+                    "[agent:{}] tool_result {} = {}",
+                    task.agent_id, name, tool_result
+                );
+            }
+
             response_parts.push(json!({
                 "functionResponse": {
                     "name": name,

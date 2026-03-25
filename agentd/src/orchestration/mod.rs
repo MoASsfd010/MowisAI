@@ -33,6 +33,19 @@ pub(crate) const VERTEX_MAX_OUTPUT_TOKENS: u32 = 65_536;
 pub(crate) const VERTEX_THINKING_BUDGET_TOKENS: u32 = 24_576;
 
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static DEBUG_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Enable/disable verbose orchestration logging (socket/HTTP payloads, round timings, etc).
+/// Normal mode prints only high-signal CLI events (tool calls / file ops).
+pub fn set_debug(enabled: bool) {
+    DEBUG_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+pub(crate) fn debug_enabled() -> bool {
+    DEBUG_ENABLED.load(Ordering::Relaxed)
+}
 
 /// Standard generation block for text / tools (no JSON mode).
 pub(crate) fn vertex_generation_config(temperature: f64) -> Value {
@@ -71,6 +84,9 @@ pub(crate) fn vertex_generation_config_json(temperature: f64) -> Value {
 }
 
 pub(crate) fn trace(msg: &str) {
+    if !debug_enabled() {
+        return;
+    }
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()

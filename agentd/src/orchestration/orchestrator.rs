@@ -20,7 +20,7 @@ use super::types::{
 };
 use super::{
     gcloud_access_token, trace, vertex_generate_url, vertex_generation_config, HTTP_TIMEOUT_SECS,
-    VERTEX_MAX_OUTPUT_TOKENS,
+    VERTEX_MAX_OUTPUT_TOKENS, debug_enabled,
 };
 
 pub fn run(
@@ -105,12 +105,18 @@ impl OrchestrationInteractiveSession {
             .push_str("\n\n---\nUser follow-up:\n");
         self.context.task_summary.push_str(user_line);
 
-        println!("[layer2] Creating implementation blueprint (follow-up)…");
+        if debug_enabled() {
+            println!("[layer2] Creating implementation blueprint (follow-up)…");
+        }
         let mut blueprint = create_blueprint(&self.context, &self.project_id)?;
         cap_agents(&mut blueprint, self.max_agents);
-        println!("[layer2] Blueprint sandboxes: {}", blueprint.sandboxes.len());
+        if debug_enabled() {
+            println!("[layer2] Blueprint sandboxes: {}", blueprint.sandboxes.len());
+        }
 
-        println!("[layer3] Building per-sandbox execution plans…");
+        if debug_enabled() {
+            println!("[layer3] Building per-sandbox execution plans…");
+        }
         let mut plans = create_sandbox_plans_parallel(
             &self.context,
             &blueprint,
@@ -122,11 +128,15 @@ impl OrchestrationInteractiveSession {
             self.sandbox_by_team
                 .insert(p.sandbox_team.clone(), p.sandbox_id.clone());
         }
-        println!("[layer3] Created {} sandbox plan(s)", plans.len());
+        if debug_enabled() {
+            println!("[layer3] Created {} sandbox plan(s)", plans.len());
+        }
 
         apply_coordinator_briefing(&mut plans, &self.transcript, &self.context, &self.project_id)?;
 
-        println!("[layer4] Running sandbox managers…");
+        if debug_enabled() {
+            println!("[layer4] Running sandbox managers…");
+        }
         let sandbox_results = run_sandbox_managers_parallel(
             &plans,
             &self.project_id,
@@ -134,7 +144,9 @@ impl OrchestrationInteractiveSession {
             Some(self.warm_by_sandbox.clone()),
         )?;
 
-        println!("[layer5] Synthesizing final output…");
+        if debug_enabled() {
+            println!("[layer5] Synthesizing final output…");
+        }
         let prompt_joined = self.transcript.join("\n\n---\n");
         let final_text = synthesize(
             &prompt_joined,
@@ -161,15 +173,23 @@ pub fn run_session_first(
     verify_vertex_connectivity(project_id)?;
     trace("preflight: Vertex connectivity check passed");
 
-    println!("[layer1] Gathering project context…");
+    if debug_enabled() {
+        println!("[layer1] Gathering project context…");
+    }
     let context = gather_context(prompt, project_id, socket_path).context("layer1 context")?;
 
-    println!("[layer2] Creating implementation blueprint…");
+    if debug_enabled() {
+        println!("[layer2] Creating implementation blueprint…");
+    }
     let mut blueprint = create_blueprint(&context, project_id).context("layer2 architect")?;
     cap_agents(&mut blueprint, max_agents);
-    println!("[layer2] Blueprint sandboxes: {}", blueprint.sandboxes.len());
+    if debug_enabled() {
+        println!("[layer2] Blueprint sandboxes: {}", blueprint.sandboxes.len());
+    }
 
-    println!("[layer3] Building per-sandbox execution plans…");
+    if debug_enabled() {
+        println!("[layer3] Building per-sandbox execution plans…");
+    }
     let reuse = HashMap::new();
     let mut plans = create_sandbox_plans_parallel(
         &context,
@@ -182,14 +202,18 @@ pub fn run_session_first(
     for p in &plans {
         sandbox_by_team.insert(p.sandbox_team.clone(), p.sandbox_id.clone());
     }
-    println!("[layer3] Created {} sandbox plan(s)", plans.len());
+    if debug_enabled() {
+        println!("[layer3] Created {} sandbox plan(s)", plans.len());
+    }
 
     let transcript = vec![prompt.to_string()];
     apply_coordinator_briefing(&mut plans, &transcript, &context, project_id)?;
 
     let warm_arc = Arc::new(Mutex::new(HashMap::<String, SandboxWarmState>::new()));
 
-    println!("[layer4] Running sandbox managers…");
+    if debug_enabled() {
+        println!("[layer4] Running sandbox managers…");
+    }
     let sandbox_results = run_sandbox_managers_parallel(
         &plans,
         project_id,
@@ -197,7 +221,9 @@ pub fn run_session_first(
         Some(warm_arc.clone()),
     )?;
 
-    println!("[layer5] Synthesizing final output…");
+    if debug_enabled() {
+        println!("[layer5] Synthesizing final output…");
+    }
     let prompt_joined = transcript.join("\n\n---\n");
     let final_text = synthesize(
         &prompt_joined,
