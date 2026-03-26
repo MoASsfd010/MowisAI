@@ -167,4 +167,65 @@ fn map_tool_to_ssh(tool: &str, input: Value) -> String {
             let content_b64 = input["content"].as_str().unwrap_or("");
             format!("echo '{}' | base64 -d > /workspace/{}", content_b64, path)
         }
-        "run
+        "run_command" => {
+            let cmd = input["cmd"].as_str().unwrap_or("");
+            format!("cd /workspace && {}", cmd)
+        }
+        "list_files" => {
+            let path = input["path"].as_str().unwrap_or(".");
+            format!("find /workspace/{} -maxdepth 2 -type f", path)
+        }
+        "git_clone" => {
+            let url = input["url"].as_str().unwrap_or("");
+            format!("cd /workspace && git clone {} repo || true", url)
+        }
+        "pip_install" => {
+            let pkgs = input["packages"].as_array().unwrap_or(&vec![]).iter().map(|v| v.as_str().unwrap_or("")).collect::<Vec<_>>().join(" ");
+            format!("pip install {}", pkgs)
+        }
+        _ => "echo 'tool not mapped'".to_string(),
+    }
+}
+
+fn ssh_exec(handle: &VmHandle, cmd: &str) -> Result<std::process::Output> {
+    let output = Command::new("ssh")
+        .args([
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "ConnectTimeout=10",
+            "-i", handle.ssh_key.to_str().unwrap(),
+            &format!("root@localhost -p {}", handle.ssh_port),
+            cmd,
+        ])
+        .output()
+        .context("ssh exec")?;
+    Ok(output)
+}
+
+fn generate_ssh_keypair(sandbox_id: &str) -> Result<(PathBuf, PathBuf)> {
+    let key_dir = std::env::temp_dir().join(format!("mowis-ssh-{}", sandbox_id));
+    fs::create_dir_all(&key_dir)?;
+    let private = key_dir.join("id_ed25519");
+    let public = key_dir.join("id_ed25519.pub");
+    Command::new("ssh-keygen")
+        .args(["-t", "ed25519", "-f", private.to_str().unwrap(), "-N", "", "-q"])
+        .status()?;
+    Ok((private, public))
+}
+
+fn copy_dir_all(src: impl AsRef<std::path::Path>, dst: impl AsRef<std::path::Path>) -> Result<()> {
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        if ty.is_directory() {
+            fs::create_dir_all(dst.as_ref().join(entry.file_name()))?;
+            copy_dir_all(entry.path(), dst.as_ref().join(entry.file_name()))?;
+        } else if ty.is_symlink() {
+            let target = fs::read_link(entry.path())?;
+            std::os::unix::fs::symlink(target, dst.as_ref().join(entry.file_name()))?;
+        } else {
+            fs::copy(entry.path(), dst.as_ref().join(entry.file_name()))?;
+        }
+    }
+    Ok(())
+}
