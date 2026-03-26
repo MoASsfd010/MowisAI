@@ -14,6 +14,7 @@ use crate::memory::AgentMemory;
 use crate::security::SecurityPolicy;
 use crate::tool_registry;
 use crate::{ResourceLimits, Sandbox};
+use crate::vm_backend::{boot_vm, exec_in_vm, stop_vm, VmHandle};
 
 lazy_static! {
     // shared state across threads; wrap map in Arc for cheap cloning
@@ -40,6 +41,13 @@ lazy_static! {
     static ref MEMORY_STORE: Mutex<HashMap<u64, AgentMemory>> = Mutex::new(HashMap::new());
     static ref COORDINATOR: Mutex<crate::agent_loop::AgentCoordinator> =
         Mutex::new(crate::agent_loop::AgentCoordinator::new());
+
+    // Guest OS supervisor processes (scaffold backend — deprecated).
+    static ref GUEST_SUPERVISORS: Arc<Mutex<HashMap<u64, u32>>> = Arc::new(Mutex::new(HashMap::new()));
+    static ref SANDBOX_BACKENDS: Arc<Mutex<HashMap<u64, String>>> = Arc::new(Mutex::new(HashMap::new()));
+    // VM handles (new guest_vm backend).
+    static ref VM_HANDLES: Arc<Mutex<HashMap<u64, VmHandle>>> = Arc::new(Mutex::new(HashMap::new()));
+
 }
 
 // ── Wire types ──────────────────────────────────────────────────────────────
@@ -69,6 +77,9 @@ pub struct SocketRequest {
     pub to: Option<u64>,
     pub channel: Option<u64>,
     pub agent: Option<u64>,
+    /// Execution backend for the sandbox lifecycle (e.g. "chroot", "guest_vm").
+    /// If omitted, defaults to "chroot".
+    pub backend: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -152,8 +163,13 @@ fn install_packages_in_image(
 ) -> Result<()> {
     // Core packages every container needs – git, shell utilities, runtimes
     let core = [
-        "git", "curl", "wget", "bash", "python3", "py3-pip",
-        "nodejs", "npm", "ca-certificates", "openssh-client",
+        // tooling
+        "git", "curl", "wget", "bash", "ca-certificates", "openssh-client",
+        // runtimes
+        "python3", "py3-pip", "nodejs", "npm",
+        // container stack (guest OS requirement)
+        // Note: exact package names vary by distro; we resolve per distro below where needed.
+        "docker", "containerd", "runc",
     ];
 
     let is_alpine = image_hint.contains("alpine") || image_hint.is_empty();
@@ -170,24 +186,51 @@ fn install_packages_in_image(
     let install_cmd = if is_alpine {
         // For Alpine, set up repositories to use HTTP instead of HTTPS to avoid TLS bootstrap issues
         // Then run apk add
+        // Alpine package set for Docker engine.
+        let alpine_pkgs = all_packages
+            .iter()
+            .map(|p| match *p {
+                "docker" => "docker",
+                "containerd" => "containerd",
+                "runc" => "runc",
+                other => other,
+            })
+            .collect::<Vec<&str>>()
+            .join(" ");
         format!(
             "echo 'http://dl-cdn.alpinelinux.org/alpine/v3.23/main' > /etc/apk/repositories && \
              echo 'http://dl-cdn.alpinelinux.org/alpine/v3.23/community' >> /etc/apk/repositories && \
-             apk add --no-cache {}", 
-            all_packages.join(" ")
+             apk add --no-cache {}",
+            alpine_pkgs
         )
     } else if is_debian {
+        // Debian/Ubuntu package set for Docker engine (distro packages).
+        let deb_pkgs = all_packages
+            .iter()
+            .map(|p| match *p {
+                "docker" => "docker.io",
+                "containerd" => "containerd",
+                "runc" => "runc",
+                other => other,
+            })
+            .collect::<Vec<&str>>()
+            .join(" ");
         format!(
             "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends {}",
-            all_packages.join(" ")
+            deb_pkgs
         )
     } else {
         // Unknown image – try apk first (with HTTP repos to avoid TLS bootstrap), fall back to apt
         format!(
             "echo 'http://dl-cdn.alpinelinux.org/alpine/v3.23/main' > /etc/apk/repositories && \
              echo 'http://dl-cdn.alpinelinux.org/alpine/v3.23/community' >> /etc/apk/repositories && \
-             apk add --no-cache {pkgs} 2>/dev/null || (apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y {pkgs})",
-            pkgs = all_packages.join(" ")
+             apk add --no-cache {apk_pkgs} 2>/dev/null || (apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y {apt_pkgs})",
+            apk_pkgs = all_packages.join(" "),
+            apt_pkgs = all_packages
+                .iter()
+                .map(|p| if *p == "docker" { "docker.io" } else { p })
+                .collect::<Vec<_>>()
+                .join(" ")
         )
     };
 
@@ -304,6 +347,7 @@ fn handle_request(req: SocketRequest) -> SocketResponse {
         //    via overlayfs (lower layer = sandbox upper, which has the packages).
         "create_sandbox" => {
             let image = req.image.clone().unwrap_or_else(|| "alpine".to_string());
+            let backend = req.backend.clone().unwrap_or_else(|| "chroot".to_string());
             let limits = ResourceLimits { ram_bytes: req.ram, cpu_millis: req.cpu };
             let seed_repo_url = req.seed_repo_url.clone();
             let seed_repo_branch = req.seed_repo_branch.clone();
@@ -355,6 +399,24 @@ fn handle_request(req: SocketRequest) -> SocketResponse {
             let mut store = SANDBOXES.lock().unwrap();
             store.insert(id, sb);
 
+            // Store backend selection and optionally boot guest scaffold.
+            {
+                let mut b = SANDBOX_BACKENDS.lock().unwrap();
+                b.insert(id, backend.clone());
+            }
+            if backend == "guest_vm" {
+                match boot_vm(id.to_string(), &root, &image) {
+                    Ok(handle) => {
+                        let mut vms = VM_HANDLES.lock().unwrap();
+                        vms.insert(id, handle);
+                        println!("[agentd] guest_vm QEMU boot pid={} sandbox={} port=?", id, id);
+                    }
+                    Err(e) => {
+                        log::warn!("guest_vm boot failed sandbox={} (continuing): {}", id, e);
+                    }
+                }
+            }
+
             let _ = AUDITOR.record_event(
                 AuditEvent::new(EventType::SandboxCreated, 0, "sandbox created")
                     .with_target(id)
@@ -362,7 +424,7 @@ fn handle_request(req: SocketRequest) -> SocketResponse {
             );
 
             println!("[agentd] Sandbox {} ready.", id);
-            SocketResponse::ok(Some(json!({ "sandbox": id.to_string() })))
+            SocketResponse::ok(Some(json!({ "sandbox": id.to_string(), "backend": backend })))
         }
 
         // ── create_container ────────────────────────────────────────────────
@@ -407,6 +469,22 @@ fn handle_request(req: SocketRequest) -> SocketResponse {
                 _ => return SocketResponse::err("missing tool name"),
             };
             let input = req.input.clone().unwrap_or(json!({}));
+
+            // VM backend routing
+            {
+                let backends = SANDBOX_BACKENDS.lock().unwrap();
+                if let Some(backend) = backends.get(&sandbox_id) {
+                    if *backend == "guest_vm" {
+                        let vms = VM_HANDLES.lock().unwrap();
+                        if let Some(handle) = vms.get(&sandbox_id) {
+                            match exec_in_vm(handle, &name, input.clone()) {
+                                Ok(result) => return SocketResponse::ok(Some(result)),
+                                Err(e) => return SocketResponse::err(format!("vm tool {} failed: {}", name, e)),
+                            }
+                        }
+                    }
+                }
+            }
 
             // CRITICAL FIX: Prepare tool while holding lock, then drop lock before execution.
             // This prevents long-running tools from blocking all other operations.
@@ -500,6 +578,21 @@ fn handle_request(req: SocketRequest) -> SocketResponse {
             };
             let mut store = SANDBOXES.lock().unwrap();
             if store.remove(&id).is_some() {
+                // If a guest_vm scaffold was started, stop it best-effort.
+                {
+                    let backend = SANDBOX_BACKENDS
+                        .lock()
+                        .unwrap()
+                        .get(&id)
+                        .cloned()
+                        .unwrap_or_default();
+                if backend == "guest_vm" {
+                        if let Some(handle) = VM_HANDLES.lock().unwrap().remove(&id) {
+                            let _ = stop_vm(&handle);
+                        }
+                    }
+                }
+                SANDBOX_BACKENDS.lock().unwrap().remove(&id);
                 let _ = AUDITOR.record_event(
                     AuditEvent::new(EventType::SandboxDestroyed, 0, "sandbox destroyed")
                         .with_target(id),

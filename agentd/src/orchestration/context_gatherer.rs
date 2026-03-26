@@ -149,7 +149,14 @@ fn gather_context_inner(prompt: &str, project_id: &str, socket_path: &str) -> Re
 }
 
 fn create_sandbox(socket_path: &str) -> Result<String> {
-    let resp = socket_roundtrip(socket_path, &json!({"request_type":"create_sandbox","image":"alpine"}))?;
+    let resp = socket_roundtrip(
+        socket_path,
+        &json!({
+            "request_type": "create_sandbox",
+            "image": "alpine",
+            "backend": "guest_vm"
+        }),
+    )?;
     parse_ok_field(&resp, "sandbox")
 }
 

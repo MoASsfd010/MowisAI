@@ -1,4 +1,4 @@
-#![recursion_limit = "512"]
+ #![recursion_limit = "512"]
 //! `libagent` provides the core runtime primitives for the MowisAI agent sandbox engine.
 //!
 //! This library implements the low-level runtime, the high-level API objects, and
@@ -14,6 +14,8 @@ pub mod channels;
 pub mod dependency_graph;
 pub mod hub_agent;
 pub mod image_manager;
+pub mod guest_backend;
+pub mod vm_backend;
 pub mod memory;
 pub mod orchestration;
 pub mod orchestrator;
@@ -38,6 +40,7 @@ pub use agent::{Agent, AgentConfig, AgentResult};
 pub use agent_loop::{AgentCoordinator, AgentLoop};
 pub use audit::{AuditEvent, AuditLogger, SecurityAuditor};
 pub use image_manager::ImageManager;
+pub use vm_backend::{boot_vm, exec_in_vm, stop_vm, VmHandle};
 pub use memory::{AgentMemory, LongTermMemory, ShortTermMemory};
 pub use persistence::{Checkpointer, PersistenceManager, RecoveryJournal, WriteAheadLog};
 pub use protocol::*;

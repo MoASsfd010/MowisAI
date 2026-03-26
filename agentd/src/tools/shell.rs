@@ -20,9 +20,17 @@ impl Tool for RunCommandTool {
         let root = ctx.root_path.as_ref()
             .ok_or_else(|| anyhow::anyhow!("run_command: must execute within a container (no root_path)"))?;
 
-        let mut c = Command::new("chroot");
+        // Execute in a new PID namespace so processes started by the agent are not visible
+        // from the host PID namespace. We still use `chroot` for filesystem isolation.
+        let mut c = Command::new("unshare");
         let cwd_str = cwd.unwrap_or("/");
-        c.arg(root)
+        c.arg("--fork")
+            .arg("--pid")
+            // Provide a correct /proc view for the new PID namespace.
+            .arg("--mount-proc")
+            .arg("--")
+            .arg("chroot")
+            .arg(root)
             .arg("/bin/sh")
             .arg("-c")
             .arg(&format!("cd {} 2>/dev/null && {}", cwd_str, cmd));
@@ -67,8 +75,16 @@ impl Tool for RunScriptTool {
             let mut f = std::fs::File::create(&host_path)?;
             f.write_all(script.as_bytes())?;
             drop(f);
-            let mut c = Command::new("chroot");
-            c.arg(root).arg(interpreter).arg(&tmp_path);
+            // Run inside new PID namespace for isolation.
+            let mut c = Command::new("unshare");
+            c.arg("--fork")
+                .arg("--pid")
+                .arg("--mount-proc")
+                .arg("--")
+                .arg("chroot")
+                .arg(root)
+                .arg(interpreter)
+                .arg(&tmp_path);
             let output = c.output()?;
             let _ = std::fs::remove_file(&host_path);
             Ok(json!({
@@ -78,8 +94,15 @@ impl Tool for RunScriptTool {
                 "success": output.status.success()
             }))
         } else if let Some(p) = path_str {
-            let mut c = Command::new("chroot");
-            c.arg(root).arg(interpreter).arg(p);
+            let mut c = Command::new("unshare");
+            c.arg("--fork")
+                .arg("--pid")
+                .arg("--mount-proc")
+                .arg("--")
+                .arg("chroot")
+                .arg(root)
+                .arg(interpreter)
+                .arg(p);
             let output = c.output()?;
             Ok(json!({
                 "stdout": String::from_utf8_lossy(&output.stdout).to_string(),

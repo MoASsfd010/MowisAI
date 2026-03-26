@@ -58,7 +58,10 @@ fn run_worker_inner(
          1) Use only your allowed tools.\n\
          2) Prefer edits only to owned files unless absolutely required.\n\
          3) When done, provide concise completion summary.\n\
-         4) If this is a git repo, generate diff via git_diff on path '.'.",
+         4) If this is a git repo, generate diff via git_diff on path '.'.\n\
+         5) Any long-running server/watch command (e.g. npm run dev, flask run, uvicorn, etc.) MUST be started in the background and must return quickly.\n\
+            Use a pattern like: sh -lc \"nohup <cmd> >/tmp/service.log 2>&1 & sleep 2; echo started\".\n\
+            Short-lived commands (ls/grep/git/status/curl) should run normally.",
         task.agent_id,
         task.task,
         if task.files.is_empty() {
@@ -288,8 +291,20 @@ fn run_worker_inner(
                 touched_files.insert(path.to_string());
             }
 
-            let tool_result =
-                invoke_tool_via_socket(socket_path, sandbox_id, container_id, &name, &args)?;
+            let tool_result = if name == "run_command" {
+                let mut args2 = args.clone();
+                if let Some(cmd) = args.get("cmd").and_then(|v| v.as_str()) {
+                    if should_background_command(cmd) {
+                        let wrapped = wrap_background_command(cmd, &task.agent_id);
+                        if let Some(map) = args2.as_object_mut() {
+                            map.insert("cmd".to_string(), Value::String(wrapped));
+                        }
+                    }
+                }
+                invoke_tool_via_socket(socket_path, sandbox_id, container_id, &name, &args2)?
+            } else {
+                invoke_tool_via_socket(socket_path, sandbox_id, container_id, &name, &args)?
+            };
 
             if !debug_enabled() {
                 let success = tool_result
@@ -394,4 +409,40 @@ fn extract_files_from_diff(diff: &str) -> Vec<String> {
         }
     }
     out
+}
+
+fn should_background_command(cmd: &str) -> bool {
+    let c = cmd.to_lowercase();
+    if c.contains("nohup ") || c.contains(" &") {
+        return false;
+    }
+    // Very common dev-server / watcher commands.
+    let long_running_markers = [
+        "npm run dev",
+        "npm run start",
+        "yarn dev",
+        "yarn start",
+        "pnpm dev",
+        "pnpm start",
+        "flask run",
+        "python app.py",
+        "python3 app.py",
+        "uvicorn ",
+        "gunicorn ",
+        "rails s",
+        "next dev",
+        "vite",
+    ];
+    long_running_markers.iter().any(|m| c.contains(m))
+}
+
+fn wrap_background_command(cmd: &str, agent_id: &str) -> String {
+    let safe_id: String = agent_id
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect();
+    format!(
+        "sh -lc \"nohup {} >/tmp/{}_bg.log 2>&1 & sleep 2; echo started\"",
+        cmd, safe_id
+    )
 }

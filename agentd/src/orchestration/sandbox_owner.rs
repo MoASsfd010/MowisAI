@@ -66,7 +66,8 @@ fn create_sandbox_plan_inner(
         let req = json!({
             "request_type": "create_sandbox",
             "image": config.os,
-            "packages": config.packages
+        "packages": config.packages,
+        "backend": "guest_vm"
         });
         let resp = socket_roundtrip(socket_path, &req)?;
         let id = parse_ok_field(&resp, "sandbox")?;
