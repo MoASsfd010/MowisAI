@@ -1,10 +1,13 @@
 
+use anyhow::{anyhow, Context, Result};
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::{Duration, Instant};
 
+use serde_json::json;
 use serde_json::Value;
 
 static NEXT_SSH_PORT: AtomicU16 = AtomicU16::new(10022);
@@ -34,8 +37,9 @@ pub fn detect_vm_backend() -> VmBackend {
     VmBackend::Qemu // Codespace default
 }
 
-pub fn boot_vm(sandbox_id: String, host_root: &std::path::Path, image_hint: &str) -> Result<VmHandle> {
-    let assets = dirs::home_dir().unwrap().join(".mowis/vm-assets");
+pub fn boot_vm(sandbox_id: String, host_root: &std::path::Path, image_hint: &str) -> anyhow::Result<VmHandle> {
+
+    let assets = dirs::home_dir().ok_or_else(|| anyhow!("no $HOME"))?.join(".mowis/vm-assets");
     let kernel = assets.join("vmlinux");
     let mut rootfs_img = assets.join(format!("sandbox-{}.ext4", sandbox_id));
     
@@ -63,7 +67,16 @@ pub fn boot_vm(sandbox_id: String, host_root: &std::path::Path, image_hint: &str
         fs::set_permissions(mountpt.path().join("root/.ssh"), fs::Permissions::from_mode(0o700))?;
         fs::set_permissions(mountpt.path().join("root/.ssh/authorized_keys"), fs::Permissions::from_mode(0o600))?;
         
-        Command::new("sudo").args(["umount", mountpt.path().to_str().unwrap()]).status()?;
+        Command::new("sudo").args(["umount", mountpt.path().to_str().unwrap()]).status()?; 
+
+        let handle = VmHandle {
+            sandbox_id: sandbox_id.clone(), 
+            pid,
+            backend: VmBackend::Qemu,
+            ssh_port,
+            ssh_key: keypair.0.clone(), 
+            rootfs_path: rootfs_img.clone(),
+        };
     }
     
     let ssh_port = NEXT_SSH_PORT.fetch_add(1, Ordering::SeqCst);
@@ -89,14 +102,14 @@ pub fn boot_vm(sandbox_id: String, host_root: &std::path::Path, image_hint: &str
     let pid = child.id();
     
     // Wait for MOWIS_READY with SSH retry (Codespace TCG ~2-5s boot)
-    let handle = VmHandle {
-        sandbox_id,
-        pid,
-        backend: VmBackend::Qemu,
-        ssh_port,
-        ssh_key: keypair.0,
-        rootfs_path: rootfs_img,
-    };
+        let mut handle = VmHandle {
+            sandbox_id: sandbox_id.clone(),
+            pid: 0, // Set after spawn
+            backend: VmBackend::Qemu,
+            ssh_port,
+            ssh_key: keypair.0.clone(),
+            rootfs_path: rootfs_img.clone(),
+        };
     
     if wait_vm_ready(&handle, Duration::from_secs(30))? {
         println!("[vm_backend] QEMU VM ready sandbox={} port={}", sandbox_id, ssh_port);
@@ -106,7 +119,8 @@ pub fn boot_vm(sandbox_id: String, host_root: &std::path::Path, image_hint: &str
     }
 }
 
-fn wait_vm_ready(handle: &VmHandle, timeout: Duration) -> Result<bool> {
+fn wait_vm_ready(handle: &VmHandle, timeout: Duration) -> anyhow::Result<bool> {
+
     let start = Instant::now();
     loop {
         if start.elapsed() > timeout {
@@ -130,7 +144,8 @@ fn wait_vm_ready(handle: &VmHandle, timeout: Duration) -> Result<bool> {
     }
 }
 
-pub fn stop_vm(handle: &VmHandle) -> Result<()> {
+pub fn stop_vm(handle: &VmHandle) -> anyhow::Result<()> {
+
     // QEMU: qemu-monitor or kill
     let _ = Command::new("kill").arg(format!("{}", handle.pid)).status();
     // Cleanup
@@ -217,7 +232,7 @@ fn copy_dir_all(src: impl AsRef<std::path::Path>, dst: impl AsRef<std::path::Pat
     for entry in fs::read_dir(src)? {
         let entry = entry?;
         let ty = entry.file_type()?;
-        if ty.is_directory() {
+        if ty.is_dir() {
             fs::create_dir_all(dst.as_ref().join(entry.file_name()))?;
             copy_dir_all(entry.path(), dst.as_ref().join(entry.file_name()))?;
         } else if ty.is_symlink() {
